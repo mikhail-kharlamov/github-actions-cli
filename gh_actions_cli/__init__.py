@@ -1,0 +1,1 @@
+"""GitHub Actions interactive CLI."""

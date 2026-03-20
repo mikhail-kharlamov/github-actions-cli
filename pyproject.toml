@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gh-actions-cli"
+version = "0.1.0"
+description = "Interactive CLI for GitHub Actions workflows"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27.0",
+  "PyYAML>=6.0.1",
+  "rich>=13.7.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.1.1",
+  "pytest-httpx>=0.30.0",
+]
+
+[project.scripts]
+gh-actions-cli = "gh_actions_cli.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["gh_actions_cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
