@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from collections.abc import Iterator
 from contextlib import contextmanager
 import importlib
@@ -11,6 +12,8 @@ from rich.console import Console
 from gh_actions_cli.app import App
 
 COMMAND_INTERRUPT_SIGNAL = getattr(signal, "SIGQUIT", None)
+READLINE_PROMPT = "\001\033[1;36m\002gh-actions> \001\033[0m\002"
+RICH_PROMPT = "[bold cyan]gh-actions> [/bold cyan]"
 
 
 class CommandInterrupted(RuntimeError):
@@ -43,13 +46,19 @@ def enable_line_editing() -> ModuleType | None:
     return readline
 
 
+def read_command_line(console: Console, readline: ModuleType | None) -> str:
+    if readline is None:
+        return console.input(RICH_PROMPT)
+    return builtins.input(READLINE_PROMPT)
+
+
 def run_repl(app: App, console: Console) -> int:
     readline = enable_line_editing()
     console.print(r"Введите /help для списка команд. Ctrl+\ останавливает текущую команду, Ctrl+C выходит.")
     with command_interrupts_enabled():
         while True:
             try:
-                line = console.input("[bold cyan]gh-actions> [/bold cyan]")
+                line = read_command_line(console, readline)
             except CommandInterrupted:
                 console.print()
                 continue

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -341,12 +342,35 @@ def test_run_repl_adds_entered_commands_to_history(monkeypatch) -> None:
 
     app, console, _client = _make_app()
     inputs = iter(["/help", "/quit"])
-    monkeypatch.setattr(console, "input", lambda _prompt: next(inputs))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
 
     exit_code = repl.run_repl(app, console)
 
     assert exit_code == 0
     assert history == ["/help", "/quit"]
+
+
+def test_run_repl_passes_prompt_to_readline_input(monkeypatch) -> None:
+    fake_readline = SimpleNamespace(parse_and_bind=lambda _value: None, add_history=lambda _line: None)
+    monkeypatch.setattr(repl, "enable_line_editing", lambda: fake_readline)
+
+    app, console, _client = _make_app()
+    prompts: list[str] = []
+
+    def fake_input(prompt: str) -> str:
+        prompts.append(prompt)
+        return "/quit"
+
+    def fail_console_input(_prompt: str) -> str:
+        raise AssertionError("readline input must receive the prompt directly")
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    monkeypatch.setattr(console, "input", fail_console_input)
+
+    exit_code = repl.run_repl(app, console)
+
+    assert exit_code == 0
+    assert prompts == [repl.READLINE_PROMPT]
 
 
 def test_run_repl_stops_current_command_on_command_interrupt(monkeypatch) -> None:
