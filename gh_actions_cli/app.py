@@ -11,7 +11,7 @@ from gh_actions_cli.commands import CommandError, parse_command
 from gh_actions_cli.config import AppConfig
 from gh_actions_cli.github_api import GitHubAPIError
 from gh_actions_cli.logs import extract_job_logs, extract_step_log
-from gh_actions_cli.models import ArtifactSummary, JobSummary, SessionState, WorkflowRunSummary, WorkflowSummary
+from gh_actions_cli.models import ArtifactSummary, JobSummary, RunInvocation, SessionState, WorkflowRunSummary, WorkflowSummary
 from gh_actions_cli.renderer import (
     render_artifacts,
     render_dispatch_inputs,
@@ -42,8 +42,14 @@ HELP_TEXT = """\
 /follow-logs <job-id>        обновлять лог job до завершения
 /artifacts <run-id>          список артефактов run
 /download-artifacts <run-id> <artifact...> [dir=...]  скачать выбранные артефакты
+/cancel-run <run-id>         остановить run
+/run-args <run-id>           показать аргументы запуска run
 /clear                       очистить экран
 /quit                        выйти
+
+Горячие клавиши:
+Ctrl+\\                      остановить текущую команду на macOS/Linux
+Ctrl+C                       выйти из CLI
 """
 
 
@@ -52,11 +58,13 @@ class GitHubClientProtocol(Protocol):
     def get_workflow(self, workflow_id: str | int) -> WorkflowSummary: ...
     def get_workflow_runs(self, workflow_id: str | int, limit: int = 10) -> list[WorkflowRunSummary]: ...
     def get_run(self, run_id: int) -> WorkflowRunSummary: ...
+    def get_run_payload(self, run_id: int) -> dict: ...
     def list_jobs(self, run_id: int) -> list[JobSummary]: ...
     def list_run_artifacts(self, run_id: int) -> list[ArtifactSummary]: ...
     def dispatch_workflow(self, workflow_id_or_file: str | int, ref: str, inputs: dict[str, str]) -> None: ...
     def download_run_logs(self, run_id: int) -> bytes: ...
     def download_artifact_zip(self, artifact_id: int) -> bytes: ...
+    def cancel_run(self, run_id: int) -> None: ...
     def get_workflow_file_content(self, path: str, ref: str) -> str: ...
     def get_repository(self) -> dict: ...
 
@@ -104,15 +112,19 @@ class App:
         elif name == "steps":
             self._handle_steps(args)
         elif name == "logs":
-            self._handle_logs(args)
+            self._handle_logs(args, options)
         elif name == "step-log":
-            self._handle_step_log(args)
+            self._handle_step_log(args, options)
         elif name == "follow-logs":
             self._handle_follow_logs(args)
         elif name == "artifacts":
             self._handle_artifacts(args)
         elif name == "download-artifacts":
             self._handle_download_artifacts(args, options)
+        elif name == "cancel-run":
+            self._handle_cancel_run(args)
+        elif name == "run-args":
+            self._handle_run_args(args)
         return True
 
     def _handle_workflows(self) -> None:
@@ -140,6 +152,16 @@ class App:
         ref = options.get("ref") or self._default_ref()
         inputs = {key: value for key, value in options.items() if key != "ref"}
         self.github_client.dispatch_workflow(self._workflow_dispatch_target(workflow), ref, inputs)
+        self.session.recent_invocations.insert(
+            0,
+            RunInvocation(
+                run_id=self._latest_run_id_for_workflow(workflow.id),
+                workflow_identifier=str(workflow.id),
+                workflow_name=workflow.name,
+                ref=ref,
+                inputs=inputs,
+            ),
+        )
         render_message(self.console, f"Workflow {workflow.name} отправлен с ref={ref}.", style="green")
 
     def _handle_run_form(self, args: list[str]) -> None:
@@ -160,6 +182,16 @@ class App:
             if value:
                 values[item.name] = self._normalize_input_value(item.type, value, item.options)
         self.github_client.dispatch_workflow(self._workflow_dispatch_target(workflow), ref, values)
+        self.session.recent_invocations.insert(
+            0,
+            RunInvocation(
+                run_id=self._latest_run_id_for_workflow(workflow.id),
+                workflow_identifier=str(workflow.id),
+                workflow_name=workflow.name,
+                ref=ref,
+                inputs=values,
+            ),
+        )
         render_message(self.console, f"Workflow {workflow.name} отправлен.", style="green")
 
     def _handle_runs(self, args: list[str], options: dict[str, str]) -> None:
@@ -210,15 +242,17 @@ class App:
             }
         render_steps(self.console, job.steps)
 
-    def _handle_logs(self, args: list[str]) -> None:
+    def _handle_logs(self, args: list[str], options: dict[str, str]) -> None:
         job = self._resolve_job(args)
         job_logs = self._load_job_logs(job.run_id)
         selected = job_logs.get(job.id)
         if selected is None:
             raise ValueError(f"Для job {job.id} не удалось найти лог.")
-        self.console.print(selected.content)
+        if not self._option_enabled(options, "no_print"):
+            self.console.print(selected.content)
+        self._write_text_output(selected.content, options.get("file"))
 
-    def _handle_step_log(self, args: list[str]) -> None:
+    def _handle_step_log(self, args: list[str], options: dict[str, str]) -> None:
         if len(args) < 2:
             raise ValueError("Нужно указать job и step.")
         job = self._resolve_job(args[:1])
@@ -236,7 +270,9 @@ class App:
                 f"Не удалось точно выделить шаг {result.step_name}, показываю лог job целиком.",
                 style="yellow",
             )
-        self.console.print(result.content)
+        if not self._option_enabled(options, "no_print"):
+            self.console.print(result.content)
+        self._write_text_output(result.content, options.get("file"))
 
     def _handle_follow_logs(self, args: list[str]) -> None:
         job = self._resolve_job(args)
@@ -279,6 +315,47 @@ class App:
             "Скачано:\n" + "\n".join(downloaded),
             style="green",
         )
+
+    def _handle_cancel_run(self, args: list[str]) -> None:
+        run = self._resolve_run(args)
+        self.github_client.cancel_run(run.id)
+        render_message(self.console, f"Run {run.id} отправлен на остановку.", style="yellow")
+
+    def _handle_run_args(self, args: list[str]) -> None:
+        run = self._resolve_run(args)
+        invocation = next((item for item in self.session.recent_invocations if item.run_id == run.id), None)
+        if invocation is not None:
+            lines = [
+                f"Run: {run.id}",
+                f"Source: {invocation.source}",
+                f"Workflow: {invocation.workflow_name}",
+                f"ref: {invocation.ref}",
+                "inputs:",
+            ]
+            if invocation.inputs:
+                lines.extend(f"  {key}={value}" for key, value in invocation.inputs.items())
+            else:
+                lines.append("  <none>")
+            render_message(self.console, "\n".join(lines), style="green")
+            return
+
+        payload = self.github_client.get_run_payload(run.id)
+        display_title = payload.get("display_title") or payload.get("name") or str(run.id)
+        path = payload.get("path") or payload.get("workflow_url") or "-"
+        event = payload.get("event", "-")
+        head_sha = payload.get("head_sha", "-")
+        lines = [
+            f"Run: {run.id}",
+            "Source: github-best-effort",
+            f"Title: {display_title}",
+            f"Event: {event}",
+            f"Branch: {payload.get('head_branch') or '-'}",
+            f"Commit: {head_sha}",
+            f"Workflow ref: {path}",
+            "inputs:",
+            "  GitHub API не возвращает workflow_dispatch inputs для чужих run в явном виде.",
+        ]
+        render_message(self.console, "\n".join(lines), style="yellow")
 
     def _resolve_workflow(self, args: list[str]) -> WorkflowSummary:
         if not args:
@@ -342,6 +419,25 @@ class App:
     def _load_workflow_inputs(self, workflow: WorkflowSummary):
         yaml_text = self.github_client.get_workflow_file_content(workflow.path, self._default_ref())
         return extract_workflow_dispatch_inputs(yaml_text)
+
+    def _latest_run_id_for_workflow(self, workflow_id: int) -> int | None:
+        runs = self.github_client.get_workflow_runs(workflow_id, limit=1)
+        return runs[0].id if runs else None
+
+    def _write_text_output(self, content: str, target_file: str | None) -> None:
+        if not target_file:
+            return
+        path = Path(target_file).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        render_message(self.console, f"Лог сохранен в {path}", style="green")
+
+    @staticmethod
+    def _option_enabled(options: dict[str, str], key: str) -> bool:
+        value = options.get(key)
+        if value is None:
+            return False
+        return value.lower() in {"1", "true", "yes", "on"}
 
     def _default_ref(self) -> str:
         if self.config.default_branch:

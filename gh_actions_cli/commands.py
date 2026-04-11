@@ -24,6 +24,8 @@ KNOWN_COMMANDS = {
     "follow-logs",
     "artifacts",
     "download-artifacts",
+    "cancel-run",
+    "run-args",
 }
 
 

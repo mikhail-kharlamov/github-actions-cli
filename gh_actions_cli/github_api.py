@@ -67,6 +67,9 @@ class GitHubActionsClient:
         payload = self._get_json(f"/repos/{self.config.owner}/{self.config.repo}/actions/runs/{run_id}")
         return self._parse_run(payload)
 
+    def get_run_payload(self, run_id: int) -> dict:
+        return self._get_json(f"/repos/{self.config.owner}/{self.config.repo}/actions/runs/{run_id}")
+
     def list_jobs(self, run_id: int) -> list[JobSummary]:
         payload = self._get_json(f"/repos/{self.config.owner}/{self.config.repo}/actions/runs/{run_id}/jobs")
         jobs: list[JobSummary] = []
@@ -124,6 +127,9 @@ class GitHubActionsClient:
         )
         return response.content
 
+    def cancel_run(self, run_id: int) -> None:
+        self._request("POST", f"/repos/{self.config.owner}/{self.config.repo}/actions/runs/{run_id}/cancel")
+
     def get_workflow_file_content(self, path: str, ref: str) -> str:
         payload = self._get_json(
             f"/repos/{self.config.owner}/{self.config.repo}/contents/{path}",
@@ -144,7 +150,10 @@ class GitHubActionsClient:
     def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
         if self._client is None:
             raise RuntimeError("GitHubActionsClient must be used as a context manager.")
-        response = self._client.request(method, path, **kwargs)
+        try:
+            response = self._client.request(method, path, **kwargs)
+        except httpx.RequestError as error:
+            raise GitHubAPIError(str(error)) from error
         if response.is_error:
             self._raise_api_error(response)
         return response

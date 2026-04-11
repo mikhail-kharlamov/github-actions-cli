@@ -68,8 +68,19 @@ class ArtifactSummary:
 
 
 @dataclass(slots=True)
+class RunInvocation:
+    run_id: int | None
+    workflow_identifier: str
+    workflow_name: str
+    ref: str
+    inputs: dict[str, str] = field(default_factory=dict)
+    source: str = "local-cli"
+
+
+@dataclass(slots=True)
 class SessionState:
     workflow_index: dict[int, WorkflowSummary] = field(default_factory=dict)
     run_index: dict[int, WorkflowRunSummary] = field(default_factory=dict)
     job_index: dict[int, JobSummary] = field(default_factory=dict)
     artifact_index: dict[int, ArtifactSummary] = field(default_factory=dict)
+    recent_invocations: list[RunInvocation] = field(default_factory=list)

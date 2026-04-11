@@ -185,3 +185,28 @@ def test_download_artifact_zip_follows_redirect(httpx_mock: HTTPXMock, config: A
         content = client.download_artifact_zip(501)
 
     assert content == b"artifact-zip"
+
+
+def test_cancel_run_posts_expected_request(httpx_mock: HTTPXMock, config: AppConfig) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/actions/runs/10/cancel",
+        status_code=202,
+    )
+
+    with GitHubActionsClient(config) as client:
+        client.cancel_run(10)
+
+    request = httpx_mock.get_request()
+    assert request.method == "POST"
+    assert request.url.path == "/repos/owner/repo/actions/runs/10/cancel"
+
+
+def test_wraps_timeout_errors_as_github_api_error(config: AppConfig) -> None:
+    with GitHubActionsClient(config) as client:
+        assert client._client is not None
+        client._client.request = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            httpx.ConnectTimeout("timed out")
+        )
+
+        with pytest.raises(GitHubAPIError, match="timed out"):
+            client.list_workflows()

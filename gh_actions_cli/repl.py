@@ -1,11 +1,37 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import importlib
+import signal
 from types import ModuleType
 
 from rich.console import Console
 
 from gh_actions_cli.app import App
+
+COMMAND_INTERRUPT_SIGNAL = getattr(signal, "SIGQUIT", None)
+
+
+class CommandInterrupted(RuntimeError):
+    """Raised when the user stops only the currently running command."""
+
+
+def _raise_command_interrupted(_signal_number: int, _frame: object) -> None:
+    raise CommandInterrupted
+
+
+@contextmanager
+def command_interrupts_enabled() -> Iterator[None]:
+    if COMMAND_INTERRUPT_SIGNAL is None:
+        yield
+        return
+
+    previous_handler = signal.signal(COMMAND_INTERRUPT_SIGNAL, _raise_command_interrupted)
+    try:
+        yield
+    finally:
+        signal.signal(COMMAND_INTERRUPT_SIGNAL, previous_handler)
 
 
 def enable_line_editing() -> ModuleType | None:
@@ -19,16 +45,23 @@ def enable_line_editing() -> ModuleType | None:
 
 def run_repl(app: App, console: Console) -> int:
     readline = enable_line_editing()
-    console.print("Введите /help для списка команд.")
-    while True:
-        try:
-            line = console.input("[bold cyan]gh-actions> [/bold cyan]")
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            return 0
-        if not line.strip():
-            continue
-        if readline is not None:
-            readline.add_history(line)
-        if not app.handle_line(line):
-            return 0
+    console.print(r"Введите /help для списка команд. Ctrl+\ останавливает текущую команду, Ctrl+C выходит.")
+    with command_interrupts_enabled():
+        while True:
+            try:
+                line = console.input("[bold cyan]gh-actions> [/bold cyan]")
+            except CommandInterrupted:
+                console.print()
+                continue
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                return 0
+            if not line.strip():
+                continue
+            if readline is not None:
+                readline.add_history(line)
+            try:
+                if not app.handle_line(line):
+                    return 0
+            except CommandInterrupted:
+                console.print("\nКоманда остановлена.")
