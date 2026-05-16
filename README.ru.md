@@ -79,6 +79,7 @@ gh-actions-cli
 | `/download-artifacts <run-id> <artifact...> [dir=...]` | Скачать выбранные артефакты. Selectors: `all`, индекс из последнего `/artifacts`, artifact id или artifact name. `dir` задает папку назначения. |
 | `/cancel-run <run-id>` | Попросить GitHub остановить workflow run. |
 | `/run-args <run-id>` | Показать сохраненные аргументы запуска для run-ов, запущенных в текущей CLI-сессии, или best-effort metadata GitHub для остальных run-ов. |
+| `/runner-load [limit=100]` | Показать примерную загрузку раннеров по репозиторию: общие counts queued/in-progress, простую оценку нагрузки и разбивку по workflow. |
 | `/clear` | Очистить терминал. |
 | `/quit` | Выйти из CLI. |
 
@@ -116,6 +117,7 @@ gh-actions-cli
 | `file=/path/to/file.log` | `/logs`, `/step-log` | Сохранить вывод в локальный файл. Родительские директории создаются автоматически. |
 | `no_print=true` | `/logs`, `/step-log` | Не печатать тело лога в терминал. True values: `1`, `true`, `yes`, `on`. |
 | `dir=/path/to/save` | `/download-artifacts` | Папка, куда распаковать артефакты. По умолчанию `artifacts/run-<run-id>`. |
+| `limit=100` | `/runner-load` | Сколько последних run-ов репозитория анализировать для оценки текущей нагрузки. |
 
 ## Примеры
 
@@ -138,6 +140,8 @@ gh-actions-cli
 /download-artifacts 123456789 1 dir=~/Downloads/gh-actions
 /cancel-run 123456789
 /run-args 123456789
+/runner-load
+/runner-load limit=200
 ```
 
 ## Ограничения
@@ -147,3 +151,4 @@ gh-actions-cli
 - GitHub не отдает step logs как отдельный API resource. `/step-log` использует best-effort разбор job log и при необходимости падает в вывод полного job log.
 - Артефакты скачиваются и распаковываются локально в `artifacts/run-<run-id>/...`, если `dir=...` не указан.
 - `/run-args` точно показывает `ref` и inputs только для запусков, инициированных этим CLI в текущей сессии. Для чужих run выводится best-effort metadata из GitHub API.
+- `/runner-load` использует эвристику по статусам run-ов репозитория и не знает реальную глобальную емкость GitHub-hosted runner-ов.

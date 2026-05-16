@@ -67,6 +67,13 @@ class GitHubActionsClient:
         payload = self._get_json(f"/repos/{self.config.owner}/{self.config.repo}/actions/runs/{run_id}")
         return self._parse_run(payload)
 
+    def list_repository_runs(self, limit: int = 100) -> list[WorkflowRunSummary]:
+        payload = self._get_json(
+            f"/repos/{self.config.owner}/{self.config.repo}/actions/runs",
+            params={"per_page": str(limit)},
+        )
+        return [self._parse_run(item) for item in payload.get("workflow_runs", [])]
+
     def get_run_payload(self, run_id: int) -> dict:
         return self._get_json(f"/repos/{self.config.owner}/{self.config.repo}/actions/runs/{run_id}")
 

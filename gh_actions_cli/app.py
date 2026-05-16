@@ -11,13 +11,23 @@ from gh_actions_cli.commands import CommandError, parse_command
 from gh_actions_cli.config import AppConfig
 from gh_actions_cli.github_api import GitHubAPIError
 from gh_actions_cli.logs import extract_job_logs, extract_step_log
-from gh_actions_cli.models import ArtifactSummary, JobSummary, RunInvocation, SessionState, WorkflowRunSummary, WorkflowSummary
+from gh_actions_cli.models import (
+    ArtifactSummary,
+    JobSummary,
+    RunInvocation,
+    RunnerLoadSummary,
+    SessionState,
+    WorkflowLoadSummary,
+    WorkflowRunSummary,
+    WorkflowSummary,
+)
 from gh_actions_cli.renderer import (
     render_artifacts,
     render_dispatch_inputs,
     render_error,
     render_jobs,
     render_message,
+    render_runner_load,
     render_runs,
     render_steps,
     render_workflows,
@@ -44,6 +54,7 @@ HELP_TEXT = """\
 /download-artifacts <run-id> <artifact...> [dir=...]  скачать выбранные артефакты
 /cancel-run <run-id>         остановить run
 /run-args <run-id>           показать аргументы запуска run
+/runner-load [limit=100]     показать текущую загрузку раннеров по репозиторию
 /clear                       очистить экран
 /quit                        выйти
 
@@ -57,6 +68,7 @@ class GitHubClientProtocol(Protocol):
     def list_workflows(self) -> list[WorkflowSummary]: ...
     def get_workflow(self, workflow_id: str | int) -> WorkflowSummary: ...
     def get_workflow_runs(self, workflow_id: str | int, limit: int = 10) -> list[WorkflowRunSummary]: ...
+    def list_repository_runs(self, limit: int = 100) -> list[WorkflowRunSummary]: ...
     def get_run(self, run_id: int) -> WorkflowRunSummary: ...
     def get_run_payload(self, run_id: int) -> dict: ...
     def list_jobs(self, run_id: int) -> list[JobSummary]: ...
@@ -125,6 +137,8 @@ class App:
             self._handle_cancel_run(args)
         elif name == "run-args":
             self._handle_run_args(args)
+        elif name == "runner-load":
+            self._handle_runner_load(options)
         return True
 
     def _handle_workflows(self) -> None:
@@ -357,6 +371,38 @@ class App:
         ]
         render_message(self.console, "\n".join(lines), style="yellow")
 
+    def _handle_runner_load(self, options: dict[str, str]) -> None:
+        limit = int(options.get("limit", "100"))
+        runs = self.github_client.list_repository_runs(limit=limit)
+        active_runs = [run for run in runs if run.status in {"queued", "in_progress", "pending", "waiting"}]
+        queued = sum(1 for run in active_runs if run.status == "queued")
+        in_progress = sum(1 for run in active_runs if run.status == "in_progress")
+        workflows: dict[int | None, WorkflowLoadSummary] = {}
+        for run in active_runs:
+            item = workflows.setdefault(
+                run.workflow_id,
+                WorkflowLoadSummary(
+                    workflow_id=run.workflow_id,
+                    workflow_name=run.name,
+                ),
+            )
+            if run.status == "queued":
+                item.queued += 1
+            elif run.status == "in_progress":
+                item.in_progress += 1
+        summary = RunnerLoadSummary(
+            queued=queued,
+            in_progress=in_progress,
+            total_active=queued + in_progress,
+            pressure=self._runner_pressure(queued=queued, in_progress=in_progress),
+            workflows=sorted(
+                workflows.values(),
+                key=lambda item: (item.queued + item.in_progress, item.queued, item.workflow_name),
+                reverse=True,
+            ),
+        )
+        render_runner_load(self.console, summary)
+
     def _resolve_workflow(self, args: list[str]) -> WorkflowSummary:
         if not args:
             raise ValueError("Нужно указать workflow.")
@@ -456,6 +502,14 @@ class App:
                     self.session.job_index[index] = fresh_job
         archive = self.github_client.download_run_logs(run_id)
         return extract_job_logs(archive, jobs)
+
+    @staticmethod
+    def _runner_pressure(queued: int, in_progress: int) -> str:
+        if queued >= 2 or queued + in_progress >= 4:
+            return "Перегружено"
+        if queued >= 1 or in_progress >= 2:
+            return "Умеренно"
+        return "Свободно"
 
     @staticmethod
     def _normalize_input_value(input_type: str, value: str, options: list[str]) -> str:

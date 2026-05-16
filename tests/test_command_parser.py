@@ -27,6 +27,14 @@ def test_parse_runs_command_extracts_limit_option() -> None:
     assert command.options == {"limit": "20"}
 
 
+def test_parse_runner_load_command_without_arguments() -> None:
+    command = parse_command("/runner-load")
+
+    assert command.name == "runner-load"
+    assert command.args == []
+    assert command.options == {}
+
+
 def test_parse_command_rejects_unknown_commands() -> None:
     with pytest.raises(CommandError, match="Неизвестная команда"):
         parse_command("/wat")

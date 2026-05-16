@@ -79,6 +79,7 @@ Tokens in `key=value` form are parsed as options. Other tokens are positional ar
 | `/download-artifacts <run-id> <artifact...> [dir=...]` | Download selected artifacts. Selectors can be `all`, an index from the last `/artifacts` output, an artifact id, or an artifact name. `dir` sets the target directory. |
 | `/cancel-run <run-id>` | Ask GitHub to cancel a workflow run. |
 | `/run-args <run-id>` | Show saved dispatch arguments for runs started in the current CLI session, or best-effort GitHub metadata for other runs. |
+| `/runner-load [limit=100]` | Show a rough runner load estimate for the repository: overall queued/in-progress counts, a simple pressure label, and a workflow breakdown. |
 | `/clear` | Clear the terminal. |
 | `/quit` | Exit the CLI. |
 
@@ -116,6 +117,7 @@ Tokens in `key=value` form are parsed as options. Other tokens are positional ar
 | `file=/path/to/file.log` | `/logs`, `/step-log` | Save output to a local file. Parent directories are created automatically. |
 | `no_print=true` | `/logs`, `/step-log` | Do not print the log body to the terminal. Accepted true values are `1`, `true`, `yes`, and `on`. |
 | `dir=/path/to/save` | `/download-artifacts` | Directory where artifacts are extracted. Defaults to `artifacts/run-<run-id>`. |
+| `limit=100` | `/runner-load` | How many recent repository runs to inspect when estimating current load. |
 
 ## Examples
 
@@ -138,6 +140,8 @@ Tokens in `key=value` form are parsed as options. Other tokens are positional ar
 /download-artifacts 123456789 1 dir=~/Downloads/gh-actions
 /cancel-run 123456789
 /run-args 123456789
+/runner-load
+/runner-load limit=200
 ```
 
 ## Notes
@@ -147,3 +151,4 @@ Tokens in `key=value` form are parsed as options. Other tokens are positional ar
 - GitHub does not expose step logs as a separate API resource. `/step-log` uses best-effort parsing of the job log and falls back to the full job log when needed.
 - Artifacts are downloaded and extracted locally under `artifacts/run-<run-id>/...` unless `dir=...` is provided.
 - `/run-args` shows exact `ref` and inputs only for runs started by this CLI in the current session. For other runs it shows best-effort metadata from the GitHub API.
+- `/runner-load` is a heuristic based on repository run statuses. It does not know the real global capacity of GitHub-hosted runners.

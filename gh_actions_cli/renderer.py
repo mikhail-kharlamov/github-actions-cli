@@ -4,7 +4,15 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from gh_actions_cli.models import ArtifactSummary, JobSummary, StepSummary, WorkflowDispatchInput, WorkflowRunSummary, WorkflowSummary
+from gh_actions_cli.models import (
+    ArtifactSummary,
+    JobSummary,
+    RunnerLoadSummary,
+    StepSummary,
+    WorkflowDispatchInput,
+    WorkflowRunSummary,
+    WorkflowSummary,
+)
 
 
 def status_style(status: str | None, conclusion: str | None = None) -> str:
@@ -97,6 +105,36 @@ def render_artifacts(console: Console, artifacts: list[ArtifactSummary]) -> None
             artifact.name,
             str(artifact.size_in_bytes),
             "yes" if artifact.expired else "no",
+        )
+    console.print(table)
+
+
+def render_runner_load(console: Console, summary: RunnerLoadSummary) -> None:
+    pressure_style = {
+        "Свободно": "green",
+        "Умеренно": "yellow",
+        "Перегружено": "red",
+    }.get(summary.pressure, "cyan")
+    lines = [
+        "runner-load",
+        f"Оценка: {summary.pressure}",
+        f"queued: {summary.queued}",
+        f"in_progress: {summary.in_progress}",
+        f"active_total: {summary.total_active}",
+    ]
+    console.print(Panel("\n".join(lines), border_style=pressure_style, title="Runner Load"))
+
+    table = Table(title="By Workflow")
+    table.add_column("Workflow")
+    table.add_column("Queued")
+    table.add_column("In Progress")
+    table.add_column("Total Active")
+    for item in summary.workflows:
+        table.add_row(
+            item.workflow_name,
+            str(item.queued),
+            str(item.in_progress),
+            str(item.queued + item.in_progress),
         )
     console.print(table)
 

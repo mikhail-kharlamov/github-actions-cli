@@ -58,6 +58,23 @@ class WorkflowRunSummary:
 
 
 @dataclass(slots=True)
+class WorkflowLoadSummary:
+    workflow_id: int | None
+    workflow_name: str
+    queued: int = 0
+    in_progress: int = 0
+
+
+@dataclass(slots=True)
+class RunnerLoadSummary:
+    queued: int
+    in_progress: int
+    total_active: int
+    pressure: str
+    workflows: list[WorkflowLoadSummary] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ArtifactSummary:
     id: int
     run_id: int

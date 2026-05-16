@@ -201,6 +201,39 @@ def test_cancel_run_posts_expected_request(httpx_mock: HTTPXMock, config: AppCon
     assert request.url.path == "/repos/owner/repo/actions/runs/10/cancel"
 
 
+def test_list_repository_runs(httpx_mock: HTTPXMock, config: AppConfig) -> None:
+    httpx_mock.add_response(
+        url="https://api.github.com/repos/owner/repo/actions/runs?per_page=50",
+        json={
+            "workflow_runs": [
+                {
+                    "id": 10,
+                    "workflow_id": 1,
+                    "name": "Build",
+                    "status": "queued",
+                    "conclusion": None,
+                    "head_branch": "main",
+                },
+                {
+                    "id": 11,
+                    "workflow_id": 2,
+                    "name": "Deploy",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "head_branch": "release",
+                },
+            ]
+        },
+    )
+
+    with GitHubActionsClient(config) as client:
+        runs = client.list_repository_runs(limit=50)
+
+    assert len(runs) == 2
+    assert runs[0].status == "queued"
+    assert runs[1].workflow_id == 2
+
+
 def test_wraps_timeout_errors_as_github_api_error(config: AppConfig) -> None:
     with GitHubActionsClient(config) as client:
         assert client._client is not None

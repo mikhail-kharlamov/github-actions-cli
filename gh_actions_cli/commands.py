@@ -26,6 +26,7 @@ KNOWN_COMMANDS = {
     "download-artifacts",
     "cancel-run",
     "run-args",
+    "runner-load",
 }
 
 
