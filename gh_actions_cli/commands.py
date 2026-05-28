@@ -27,6 +27,7 @@ KNOWN_COMMANDS = {
     "cancel-run",
     "run-args",
     "runner-load",
+    "diagnose",
 }
 
 

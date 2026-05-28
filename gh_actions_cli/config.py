@@ -17,6 +17,12 @@ class AppConfig:
     github_api_url: str
     poll_interval: int
     default_branch: str | None
+    # AI diagnosis settings
+    ai_command: str = "claude"
+    ai_command_args: str = "-p"
+    diagnose_output_dir: str = "~/.gh-actions-diagnoses"
+    max_log_lines_per_job: int = 150
+    ai_timeout: int = 120
 
 
 def load_config() -> AppConfig:
@@ -41,6 +47,11 @@ def load_config() -> AppConfig:
         github_api_url=github_api_url,
         poll_interval=poll_interval,
         default_branch=default_branch,
+        ai_command=os.environ.get("GH_ACTIONS_AI_COMMAND", "claude"),
+        ai_command_args=os.environ.get("GH_ACTIONS_AI_COMMAND_ARGS", "-p"),
+        diagnose_output_dir=os.environ.get("GH_ACTIONS_DIAGNOSE_DIR", "~/.gh-actions-diagnoses"),
+        max_log_lines_per_job=int(os.environ.get("GH_ACTIONS_MAX_LOG_LINES", "150")),
+        ai_timeout=int(os.environ.get("GH_ACTIONS_AI_TIMEOUT", "120")),
     )
 
 

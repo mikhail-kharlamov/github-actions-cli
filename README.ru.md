@@ -26,9 +26,16 @@ export GITHUB_REPOSITORY=owner/repo
 
 Опционально:
 
-- `GITHUB_API_URL` - адрес GitHub API, по умолчанию `https://api.github.com`
-- `GH_ACTIONS_POLL_INTERVAL` - интервал polling для `/follow` и `/follow-logs`, по умолчанию `5`
-- `GH_ACTIONS_DEFAULT_BRANCH` - fallback branch, если GitHub не вернул default branch
+| Переменная | Умолчание | Описание |
+| --- | --- | --- |
+| `GITHUB_API_URL` | `https://api.github.com` | Адрес GitHub API. |
+| `GH_ACTIONS_POLL_INTERVAL` | `5` | Интервал polling в секундах для `/follow` и `/follow-logs`. |
+| `GH_ACTIONS_DEFAULT_BRANCH` | — | Fallback branch, если GitHub не вернул default branch. |
+| `GH_ACTIONS_AI_COMMAND` | `claude` | CLI-инструмент, используемый в `/diagnose`. Должен принимать промпт последним позиционным аргументом. |
+| `GH_ACTIONS_AI_COMMAND_ARGS` | `-p` | Аргументы через пробел, добавляемые перед промптом при вызове AI-инструмента. |
+| `GH_ACTIONS_DIAGNOSE_DIR` | `~/.gh-actions-diagnoses` | Папка, куда `/diagnose` сохраняет Markdown-отчёты. |
+| `GH_ACTIONS_MAX_LOG_LINES` | `150` | Максимальное число строк лога на джобу, передаваемых AI-инструменту. |
+| `GH_ACTIONS_AI_TIMEOUT` | `120` | Таймаут в секундах для subprocess-вызова AI. |
 
 ## Запуск
 
@@ -65,11 +72,11 @@ gh-actions-cli
 | `/workflows` | Получить список workflows репозитория и сохранить numeric indexes для следующих команд. |
 | `/workflow <workflow>` | Показать детали одного workflow. |
 | `/dispatch-inputs <workflow>` | Показать `workflow_dispatch` inputs из workflow файла. |
-| `/run <workflow> [ref=...] [key=value ...]` | Запустить workflow. `ref` выбирает branch/tag/SHA. Все остальные `key=value` опции отправляются как workflow inputs. |
+| `/run <workflow> [ref=...] [defer=...] [poll=10] [key=value ...]` | Запустить workflow. `ref` выбирает branch/tag/SHA. `defer` включает отложенный запуск (см. [Отложенный запуск](#отложенный-запуск)). Все остальные `key=value` опции отправляются как workflow inputs. |
 | `/run-form <workflow>` | Интерактивно запустить workflow через prompts на основе `workflow_dispatch` inputs. |
 | `/runs <workflow> [limit=10]` | Показать последние run-ы workflow. `limit` задает количество запрошенных run-ов. |
 | `/run-status <run-id>` | Показать status и conclusion одного run. |
-| `/follow <run-id>` | Следить за run до завершения. Остановить только эту команду можно через `Ctrl+\`. |
+| `/follow <run-id> [diagnose=true]` | Следить за run до завершения. С `diagnose=true` автоматически запускает `/diagnose` при падении. Остановить только эту команду можно через `Ctrl+\`. |
 | `/jobs <run-id>` | Показать jobs run-а и сохранить numeric indexes для команд по job. |
 | `/steps <job-id>` | Показать steps job-а. |
 | `/logs <job-id> [file=...] [no_print=true]` | Напечатать лог job целиком. `file` сохраняет лог локально. `no_print=true` сохраняет без вывода тела лога в терминал. |
@@ -80,6 +87,7 @@ gh-actions-cli
 | `/cancel-run <run-id>` | Попросить GitHub остановить workflow run. |
 | `/run-args <run-id>` | Показать сохраненные аргументы запуска для run-ов, запущенных в текущей CLI-сессии, или best-effort metadata GitHub для остальных run-ов. |
 | `/runner-load [limit=100]` | Показать примерную загрузку раннеров по репозиторию: общие counts queued/in-progress, простую оценку нагрузки и разбивку по workflow. |
+| `/diagnose <run-id>` | Скачать логи упавших джобов, вызвать AI-инструмент subprocess-ом и сохранить Markdown-отчёт в `GH_ACTIONS_DIAGNOSE_DIR`. В терминал выводится только путь к файлу. |
 | `/clear` | Очистить терминал. |
 | `/quit` | Выйти из CLI. |
 
@@ -112,12 +120,79 @@ gh-actions-cli
 | Опция | Где используется | Описание |
 | --- | --- | --- |
 | `ref=...` | `/run` | Branch, tag или SHA для workflow dispatch. По умолчанию используется `GH_ACTIONS_DEFAULT_BRANCH`, затем default branch репозитория, затем `main`. |
-| `key=value` | `/run` | Workflow input для GitHub. Все опции кроме `ref` считаются inputs. |
+| `defer=idle` | `/run` | Ждать, пока раннеры свободны (давление = "Свободно"), затем запустить. |
+| `defer=TIME` | `/run` | Запустить в указанное время. Поддерживаемые форматы: `11pm`, `11:30pm`, `23:00`. Если время уже прошло — используется следующий день. |
+| `defer=TIME,idle` | `/run` | Начать проверку раннеров с указанного времени, запустить когда свободны. |
+| `poll=N` | `/run` | Интервал проверки в минутах для `defer=idle`. По умолчанию `10`. |
+| `diagnose=true` | `/follow` | Автоматически запустить `/diagnose` если run завершился с `failure`. |
+| `key=value` | `/run` | Workflow input для GitHub. Все опции кроме `ref`, `defer` и `poll` считаются inputs. |
 | `limit=10` | `/runs` | Количество workflow run-ов для запроса. |
 | `file=/path/to/file.log` | `/logs`, `/step-log` | Сохранить вывод в локальный файл. Родительские директории создаются автоматически. |
 | `no_print=true` | `/logs`, `/step-log` | Не печатать тело лога в терминал. True values: `1`, `true`, `yes`, `on`. |
 | `dir=/path/to/save` | `/download-artifacts` | Папка, куда распаковать артефакты. По умолчанию `artifacts/run-<run-id>`. |
 | `limit=100` | `/runner-load` | Сколько последних run-ов репозитория анализировать для оценки текущей нагрузки. |
+
+## Отложенный запуск
+
+Опция `defer=` в команде `/run` позволяет отложить отправку воркфлоу не захламляя терминал.
+
+```text
+# Запустить как только раннеры освободятся (проверка каждые 10 мин)
+/run 1 ref=main defer=idle
+
+# Свой интервал проверки (каждые 5 минут)
+/run deploy.yml ref=release defer=idle poll=5
+
+# Запустить ровно в 23:00
+/run 1 ref=main defer=11pm
+/run 1 ref=main defer=23:00
+
+# Начать проверку раннеров в 23:00, запустить когда свободны
+/run 1 ref=main defer=11pm,idle
+
+# Работает вместе с inputs — defer и poll не попадают в inputs
+/run 1 ref=develop defer=idle dry_run=true environment=staging
+```
+
+Во время ожидания команда печатает одну строку статуса (например, *"Раннеры заняты (queued: 2, in_progress: 1), следующая проверка через 10 мин..."*) и подтверждает отправку. Прервать ожидание в любой момент можно через `Ctrl+\`.
+
+## AI-диагностика падений
+
+`/diagnose` вызывает локальный AI CLI-инструмент для анализа логов упавших джобов и сохраняет Markdown-отчёт — в терминал ничего не выводится.
+
+```text
+# Анализировать уже упавший ран
+/diagnose 301
+/diagnose 1          # индекс из последнего /runs
+
+# Следить за раном и автоматически диагностировать при падении
+/follow 1 diagnose=true
+/follow 123456789 diagnose=true
+```
+
+Отчёт сохраняется в `~/.gh-actions-diagnoses/<run-id>-<workflow>-<timestamp>.md` (можно изменить через `GH_ACTIONS_DIAGNOSE_DIR`). Пример содержимого:
+
+```markdown
+# Анализ падения: Build #301
+Дата: 2026-05-28 23:15:00
+Ветка: main
+
+---
+
+**test**
+- Причина: не прошли юнит-тесты модуля auth
+- Точка отказа: pytest src/auth/test_login.py::test_token_refresh
+- Рекомендация: проверить мок для refresh_token в строке 47
+```
+
+**Смена AI-инструмента.** По умолчанию вызывается `claude -p "<промпт>"`. Чтобы использовать другой инструмент:
+
+```bash
+export GH_ACTIONS_AI_COMMAND=codex
+export GH_ACTIONS_AI_COMMAND_ARGS=""   # если инструмент читает промпт как первый позиционный аргумент
+```
+
+Инструмент должен принимать полный промпт последним позиционным аргументом и писать ответ в stdout.
 
 ## Примеры
 
@@ -126,6 +201,8 @@ gh-actions-cli
 /dispatch-inputs 2
 /run 2 ref=main dry_run=true
 /run build.yml ref=release message="release candidate"
+/run 2 ref=main defer=idle
+/run 2 ref=main defer=11pm,idle dry_run=true
 /runs 2 limit=5
 /jobs 1
 /steps 1
@@ -134,6 +211,8 @@ gh-actions-cli
 /step-log 1 "Checkout" file=~/Downloads/checkout.log
 /logs 1 file=~/Downloads/job.log no_print=true
 /follow 123456789
+/follow 123456789 diagnose=true
+/diagnose 123456789
 /artifacts 123456789
 /download-artifacts 123456789 all
 /download-artifacts 123456789 eval-agent-result

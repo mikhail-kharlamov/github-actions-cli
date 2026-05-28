@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
+import datetime
 import sys
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,10 +12,10 @@ from zipfile import ZipFile
 
 from rich.console import Console
 
-from gh_actions_cli.app import App
+from gh_actions_cli.app import App, _parse_defer_time
 from gh_actions_cli.config import AppConfig
 from gh_actions_cli import repl
-from gh_actions_cli.models import JobSummary, StepSummary, WorkflowSummary
+from gh_actions_cli.models import JobSummary, StepSummary, WorkflowRunSummary, WorkflowSummary
 
 
 class FakeGitHubClient:
@@ -102,6 +105,44 @@ on:
 
     def get_repository(self) -> dict:
         return {"default_branch": "main"}
+
+    def list_repository_runs(self, limit: int = 100) -> list:
+        from gh_actions_cli.models import WorkflowRunSummary
+
+        return [
+            WorkflowRunSummary(
+                id=301,
+                workflow_id=101,
+                name="Build",
+                status="queued",
+                conclusion=None,
+                head_branch="main",
+            ),
+            WorkflowRunSummary(
+                id=302,
+                workflow_id=101,
+                name="Build",
+                status="in_progress",
+                conclusion=None,
+                head_branch="main",
+            ),
+            WorkflowRunSummary(
+                id=303,
+                workflow_id=102,
+                name="Deploy",
+                status="queued",
+                conclusion=None,
+                head_branch="release",
+            ),
+            WorkflowRunSummary(
+                id=304,
+                workflow_id=102,
+                name="Deploy",
+                status="completed",
+                conclusion="success",
+                head_branch="release",
+            ),
+        ]
 
     def list_run_artifacts(self, run_id: int) -> list:
         from gh_actions_cli.models import ArtifactSummary
@@ -260,6 +301,21 @@ def test_logs_command_can_skip_terminal_output_with_no_print_flag(tmp_path: Path
     assert "cloning repo" in target.read_text()
 
 
+def test_runner_load_command_shows_repository_and_workflow_stats() -> None:
+    app, console, _client = _make_app()
+
+    should_continue = app.handle_line("/runner-load")
+
+    output = console.export_text()
+    assert should_continue is True
+    assert "runner-load" in output
+    assert "queued: 2" in output
+    assert "in_progress: 1" in output
+    assert "Перегружено" in output
+    assert "Build" in output
+    assert "Deploy" in output
+
+
 def test_step_log_command_can_skip_terminal_output_with_no_print_flag(tmp_path: Path) -> None:
     app, console, _client = _make_app()
     app.session.job_index[1] = JobSummary(
@@ -373,6 +429,17 @@ def test_run_repl_passes_prompt_to_readline_input(monkeypatch) -> None:
     assert prompts == [repl.READLINE_PROMPT]
 
 
+def test_readline_prompt_uses_plain_ansi_for_libedit() -> None:
+    fake_readline = SimpleNamespace(__doc__="Importing this module enables command line editing using libedit readline.")
+
+    prompt = repl.readline_prompt(fake_readline)
+
+    assert prompt == repl.ANSI_PROMPT
+    assert "\001" not in prompt
+    assert "\002" not in prompt
+    assert "\033[1;36m" in prompt
+
+
 def test_run_repl_stops_current_command_on_command_interrupt(monkeypatch) -> None:
     monkeypatch.setattr(repl, "enable_line_editing", lambda: None)
 
@@ -413,3 +480,297 @@ def test_command_interrupt_handler_is_restored(monkeypatch) -> None:
         assert handlers == [(repl.COMMAND_INTERRUPT_SIGNAL, repl._raise_command_interrupted)]
 
     assert handlers[-1] == (repl.COMMAND_INTERRUPT_SIGNAL, previous_handler)
+
+
+# --- deferred dispatch tests ---
+
+def _make_free_runs() -> list:
+    return [
+        WorkflowRunSummary(id=304, workflow_id=101, name="Build", status="completed", conclusion="success", head_branch="main"),
+    ]
+
+
+def _make_busy_runs() -> list:
+    return [
+        WorkflowRunSummary(id=301, workflow_id=101, name="Build", status="queued", conclusion=None, head_branch="main"),
+        WorkflowRunSummary(id=302, workflow_id=101, name="Build", status="in_progress", conclusion=None, head_branch="main"),
+        WorkflowRunSummary(id=303, workflow_id=102, name="Deploy", status="queued", conclusion=None, head_branch="main"),
+    ]
+
+
+def test_run_command_with_defer_idle_dispatches_immediately_when_free() -> None:
+    app, console, client = _make_app()
+    app.handle_line("/workflows")
+    client.list_repository_runs = lambda limit=100: _make_free_runs()
+    slept: list[float] = []
+    app._sleep_fn = slept.append
+
+    should_continue = app.handle_line("/run 1 ref=main defer=idle")
+
+    assert should_continue is True
+    assert client.dispatched == [("build.yml", "main", {})]
+    assert slept == []
+    output = console.export_text()
+    assert "Раннеры свободны" in output
+    assert "отправлен" in output
+
+
+def test_run_command_with_defer_idle_polls_until_free() -> None:
+    app, console, client = _make_app()
+    app.handle_line("/workflows")
+    responses = iter([_make_busy_runs(), _make_busy_runs(), _make_free_runs()])
+    client.list_repository_runs = lambda limit=100: next(responses)
+    slept: list[float] = []
+    app._sleep_fn = slept.append
+
+    should_continue = app.handle_line("/run 1 ref=main defer=idle poll=10")
+
+    assert should_continue is True
+    assert client.dispatched == [("build.yml", "main", {})]
+    assert len(slept) == 2
+    assert slept[0] == 10 * 60
+    output = console.export_text()
+    assert "Раннеры заняты" in output
+    assert "Раннеры свободны" in output
+    assert "отправлен" in output
+
+
+def test_run_command_with_defer_idle_excludes_defer_from_inputs() -> None:
+    app, _console, client = _make_app()
+    app.handle_line("/workflows")
+    client.list_repository_runs = lambda limit=100: _make_free_runs()
+    app._sleep_fn = lambda _s: None
+
+    app.handle_line("/run 1 ref=main defer=idle dry_run=true")
+
+    assert client.dispatched == [("build.yml", "main", {"dry_run": "true"})]
+
+
+def test_run_command_with_defer_time_waits_until_scheduled() -> None:
+    app, console, client = _make_app()
+    app.handle_line("/workflows")
+    # now=14:00, target=23:00 → remaining=9h; after one sleep now passes target
+    times = iter([
+        datetime.datetime(2026, 5, 28, 14, 0, 0),  # _parse_defer_time call
+        datetime.datetime(2026, 5, 28, 14, 0, 0),  # first loop check
+        datetime.datetime(2026, 5, 28, 23, 1, 0),  # second loop check → exit
+    ])
+    app._now_fn = lambda: next(times)
+    slept: list[float] = []
+    app._sleep_fn = slept.append
+
+    should_continue = app.handle_line("/run 1 ref=main defer=23:00")
+
+    assert should_continue is True
+    assert client.dispatched == [("build.yml", "main", {})]
+    assert len(slept) == 1
+    output = console.export_text()
+    assert "23:00" in output
+    assert "отправлен" in output
+
+
+def test_run_command_with_defer_time_and_idle_waits_then_polls() -> None:
+    app, console, client = _make_app()
+    app.handle_line("/workflows")
+    times = iter([
+        datetime.datetime(2026, 5, 28, 22, 0, 0),  # _parse_defer_time
+        datetime.datetime(2026, 5, 28, 23, 1, 0),  # loop check → already past
+    ])
+    app._now_fn = lambda: next(times)
+    slept: list[float] = []
+    app._sleep_fn = slept.append
+    client.list_repository_runs = lambda limit=100: _make_free_runs()
+
+    should_continue = app.handle_line("/run 1 ref=main defer=23:00,idle")
+
+    assert should_continue is True
+    assert client.dispatched == [("build.yml", "main", {})]
+    output = console.export_text()
+    assert "23:00" in output
+    assert "Раннеры свободны" in output
+
+
+def test_run_command_with_unknown_defer_raises_error() -> None:
+    app, console, client = _make_app()
+    app.handle_line("/workflows")
+
+    should_continue = app.handle_line("/run 1 ref=main defer=tomorrow")
+
+    assert should_continue is True
+    assert client.dispatched == []
+    output = console.export_text()
+    assert "Не удалось распознать" in output
+
+
+# --- _parse_defer_time unit tests ---
+
+def _fixed_now(hour: int, minute: int = 0) -> Callable[[], datetime.datetime]:
+    dt = datetime.datetime(2026, 5, 28, hour, minute, 0)
+    return lambda: dt
+
+
+def test_parse_defer_time_24h_format_same_day() -> None:
+    result = _parse_defer_time("23:00", lambda: datetime.datetime(2026, 5, 28, 14, 0))
+    assert result == datetime.datetime(2026, 5, 28, 23, 0)
+
+
+def test_parse_defer_time_24h_format_next_day_when_past() -> None:
+    result = _parse_defer_time("09:00", lambda: datetime.datetime(2026, 5, 28, 14, 0))
+    assert result == datetime.datetime(2026, 5, 29, 9, 0)
+
+
+def test_parse_defer_time_ampm_11pm() -> None:
+    result = _parse_defer_time("11pm", lambda: datetime.datetime(2026, 5, 28, 14, 0))
+    assert result == datetime.datetime(2026, 5, 28, 23, 0)
+
+
+def test_parse_defer_time_ampm_with_minutes() -> None:
+    result = _parse_defer_time("11:30pm", lambda: datetime.datetime(2026, 5, 28, 14, 0))
+    assert result == datetime.datetime(2026, 5, 28, 23, 30)
+
+
+def test_parse_defer_time_ampm_noon() -> None:
+    result = _parse_defer_time("12pm", lambda: datetime.datetime(2026, 5, 28, 10, 0))
+    assert result == datetime.datetime(2026, 5, 28, 12, 0)
+
+
+def test_parse_defer_time_ampm_midnight() -> None:
+    result = _parse_defer_time("12am", lambda: datetime.datetime(2026, 5, 28, 10, 0))
+    assert result == datetime.datetime(2026, 5, 29, 0, 0)
+
+
+def test_parse_defer_time_returns_none_for_garbage() -> None:
+    result = _parse_defer_time("tomorrow", lambda: datetime.datetime(2026, 5, 28, 10, 0))
+    assert result is None
+
+
+# --- /diagnose tests ---
+
+def _make_app_with_ai(ai_fn: Callable[[str], str]) -> tuple[App, Console, FakeGitHubClient]:
+    """Make an app where _run_ai_subprocess is replaced by a callable for testing."""
+    app, console, client = _make_app()
+    app._run_ai_subprocess = ai_fn  # type: ignore[method-assign]
+    return app, console, client
+
+
+def _failed_job() -> JobSummary:
+    return JobSummary(
+        id=201, run_id=301, name="test", status="completed", conclusion="failure",
+        steps=[StepSummary(number=1, name="Run tests", status="completed", conclusion="failure")],
+    )
+
+
+def test_diagnose_command_saves_report_for_failed_run(tmp_path: Path) -> None:
+    app, console, client = _make_app_with_ai(lambda _prompt: "**test**: Причина: тест упал.")
+    app.config = dataclasses.replace(
+        app.config, diagnose_output_dir=str(tmp_path), max_log_lines_per_job=50
+    )
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="completed",
+        conclusion="failure", head_branch="main",
+    )
+    client.list_jobs = lambda run_id: [_failed_job()]
+
+    should_continue = app.handle_line("/diagnose 1")
+
+    assert should_continue is True
+    reports = list(tmp_path.glob("301-Build-*.md"))
+    assert len(reports) == 1
+    content = reports[0].read_text()
+    assert "Анализ падения" in content
+    assert "Build #301" in content
+    assert "тест упал" in content
+    output = console.export_text()
+    assert "Анализ сохранён" in output
+
+
+def test_diagnose_command_reports_no_failed_jobs() -> None:
+    app, console, _client = _make_app_with_ai(lambda _p: "ok")
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="completed",
+        conclusion="success", head_branch="main",
+    )
+    app.session.job_index[1] = JobSummary(
+        id=201, run_id=301, name="test", status="completed", conclusion="success", steps=[],
+    )
+
+    should_continue = app.handle_line("/diagnose 1")
+
+    assert should_continue is True
+    output = console.export_text()
+    assert "не найдено" in output
+
+
+def test_diagnose_command_includes_failed_job_logs_in_prompt(tmp_path: Path) -> None:
+    received_prompts: list[str] = []
+
+    def capture(prompt: str) -> str:
+        received_prompts.append(prompt)
+        return "анализ"
+
+    app, _console, client = _make_app_with_ai(capture)
+    app.config = dataclasses.replace(app.config, diagnose_output_dir=str(tmp_path))
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="completed",
+        conclusion="failure", head_branch="develop",
+    )
+    client.list_jobs = lambda run_id: [_failed_job()]
+
+    app.handle_line("/diagnose 1")
+
+    assert len(received_prompts) == 1
+    prompt = received_prompts[0]
+    assert "Build" in prompt
+    assert "develop" in prompt
+    assert "#301" in prompt
+    assert "test" in prompt        # job name
+    assert "Run tests" in prompt   # failed step name
+    assert "cloning repo" in prompt  # from FakeGitHubClient log fixture
+
+
+def test_diagnose_command_propagates_ai_tool_not_found_as_error(tmp_path: Path) -> None:
+    import subprocess as sp
+
+    def raise_not_found(_prompt: str) -> str:
+        raise ValueError("AI-инструмент не найден: 'nonexistent-ai'")
+
+    app, console, _client = _make_app_with_ai(raise_not_found)
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="completed",
+        conclusion="failure", head_branch="main",
+    )
+    app.session.job_index[1] = JobSummary(
+        id=201, run_id=301, name="test", status="completed", conclusion="failure", steps=[],
+    )
+
+    should_continue = app.handle_line("/diagnose 1")
+
+    assert should_continue is True
+    output = console.export_text()
+    assert "не найден" in output
+
+
+def test_follow_command_auto_diagnoses_on_failure(tmp_path: Path) -> None:
+    app, console, client = _make_app_with_ai(lambda _p: "причина: упало")
+    app.config = dataclasses.replace(
+        app.config, diagnose_output_dir=str(tmp_path), poll_interval=0
+    )
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="in_progress",
+        conclusion=None, head_branch="main",
+    )
+    # client.get_run returns completed+failure
+    from gh_actions_cli.models import WorkflowRunSummary as WRS
+    client.get_run = lambda run_id: WRS(
+        id=run_id, workflow_id=101, name="Build",
+        status="completed", conclusion="failure", head_branch="main",
+    )
+    client.list_jobs = lambda run_id: [_failed_job()]
+
+    should_continue = app.handle_line("/follow 1 diagnose=true")
+
+    assert should_continue is True
+    reports = list(tmp_path.glob("301-Build-*.md"))
+    assert len(reports) == 1
+    output = console.export_text()
+    assert "Анализ сохранён" in output

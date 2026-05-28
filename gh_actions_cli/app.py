@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import datetime
+import re
+import subprocess
 import time
 from pathlib import Path
+from typing import Callable
 from typing import Protocol
 
 from rich.console import Console
@@ -35,16 +39,55 @@ from gh_actions_cli.renderer import (
 from gh_actions_cli.workflow_parser import WorkflowParseError, extract_workflow_dispatch_inputs
 
 
+def _parse_defer_time(time_str: str, now_fn: Callable[[], datetime.datetime]) -> datetime.datetime | None:
+    """Parse '11pm', '11:30pm', '23:00' → next occurrence of that wall-clock time."""
+    now = now_fn()
+
+    m = re.match(r"^(\d{1,2}):(\d{2})$", time_str)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if dt <= now:
+            dt += datetime.timedelta(days=1)
+        return dt
+
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?(am|pm)$", time_str, re.IGNORECASE)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        period = m.group(3).lower()
+        if period == "pm" and hour != 12:
+            hour += 12
+        elif period == "am" and hour == 12:
+            hour = 0
+        dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if dt <= now:
+            dt += datetime.timedelta(days=1)
+        return dt
+
+    return None
+
+
+def _tail_lines(text: str, n: int) -> str:
+    """Return the last n lines of text."""
+    lines = text.splitlines()
+    return "\n".join(lines[-n:]) if len(lines) > n else text
+
+
 HELP_TEXT = """\
 /help                        показать список команд
 /workflows                   получить список workflow
 /workflow <workflow>         показать детали workflow
 /dispatch-inputs <workflow>  показать workflow_dispatch inputs
-/run <workflow> [ref=...] [key=value ...]
+/run <workflow> [ref=...] [defer=idle|TIME|TIME,idle] [poll=10] [key=value ...]
+  defer=idle          — ждать, пока раннеры свободны, затем запустить
+  defer=11pm          — запустить ровно в указанное время (11pm / 23:00 / 11:30pm)
+  defer=11pm,idle     — начать проверку раннеров с указанного времени
+  poll=N              — интервал проверки в минутах (по умолчанию 10)
 /run-form <workflow>         интерактивный запуск workflow
 /runs <workflow> [limit=10]  последние run-ы workflow
 /run-status <run-id>         статус конкретного run
-/follow <run-id>             следить за статусом run
+/follow <run-id> [diagnose=true]  следить за статусом run; при падении авто-запускает /diagnose
 /jobs <run-id>               jobs конкретного run
 /steps <job-id>              steps конкретного job
 /logs <job-id>               лог job целиком
@@ -55,8 +98,16 @@ HELP_TEXT = """\
 /cancel-run <run-id>         остановить run
 /run-args <run-id>           показать аргументы запуска run
 /runner-load [limit=100]     показать текущую загрузку раннеров по репозиторию
+/diagnose <run-id>           AI-анализ упавших джобов, сохраняет отчёт в файл
 /clear                       очистить экран
 /quit                        выйти
+
+Переменные окружения для диагностики:
+  GH_ACTIONS_AI_COMMAND      команда AI-инструмента (по умолч. claude)
+  GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. -p)
+  GH_ACTIONS_DIAGNOSE_DIR    куда сохранять отчёты (по умолч. ~/.gh-actions-diagnoses)
+  GH_ACTIONS_MAX_LOG_LINES   строк лога на джобу (по умолч. 150)
+  GH_ACTIONS_AI_TIMEOUT      таймаут в секундах (по умолч. 120)
 
 Горячие клавиши:
 Ctrl+\\                      остановить текущую команду на macOS/Linux
@@ -87,6 +138,8 @@ class App:
         self.console = console
         self.github_client = github_client
         self.session = SessionState()
+        self._sleep_fn: Callable[[float], None] = time.sleep
+        self._now_fn: Callable[[], datetime.datetime] = datetime.datetime.now
 
     def handle_line(self, raw: str) -> bool:
         try:
@@ -118,7 +171,7 @@ class App:
         elif name == "run-status":
             self._handle_run_status(args)
         elif name == "follow":
-            self._handle_follow(args)
+            self._handle_follow(args, options)
         elif name == "jobs":
             self._handle_jobs(args)
         elif name == "steps":
@@ -139,6 +192,8 @@ class App:
             self._handle_run_args(args)
         elif name == "runner-load":
             self._handle_runner_load(options)
+        elif name == "diagnose":
+            self._handle_diagnose(args)
         return True
 
     def _handle_workflows(self) -> None:
@@ -164,7 +219,15 @@ class App:
     def _handle_run(self, args: list[str], options: dict[str, str]) -> None:
         workflow = self._resolve_workflow(args)
         ref = options.get("ref") or self._default_ref()
-        inputs = {key: value for key, value in options.items() if key != "ref"}
+        inputs = {key: value for key, value in options.items() if key not in ("ref", "defer", "poll")}
+        defer = options.get("defer")
+        if defer:
+            poll_minutes = int(options.get("poll", "10"))
+            self._deferred_dispatch(workflow, ref, inputs, defer, poll_minutes)
+            return
+        self._do_dispatch(workflow, ref, inputs)
+
+    def _do_dispatch(self, workflow: WorkflowSummary, ref: str, inputs: dict[str, str]) -> None:
         self.github_client.dispatch_workflow(self._workflow_dispatch_target(workflow), ref, inputs)
         self.session.recent_invocations.insert(
             0,
@@ -177,6 +240,66 @@ class App:
             ),
         )
         render_message(self.console, f"Workflow {workflow.name} отправлен с ref={ref}.", style="green")
+
+    def _deferred_dispatch(
+        self,
+        workflow: WorkflowSummary,
+        ref: str,
+        inputs: dict[str, str],
+        defer: str,
+        poll_minutes: int,
+    ) -> None:
+        parts = [p.strip() for p in defer.split(",")]
+        schedule_time: datetime.datetime | None = None
+        wait_for_idle = False
+
+        for part in parts:
+            if part.lower() == "idle":
+                wait_for_idle = True
+            else:
+                schedule_time = _parse_defer_time(part, self._now_fn)
+                if schedule_time is None:
+                    raise ValueError(
+                        f"Не удалось распознать время: {part!r}. "
+                        "Используйте формат 11pm, 11:30pm или 23:00."
+                    )
+
+        if not schedule_time and not wait_for_idle:
+            raise ValueError("Укажите defer=idle, defer=11pm или defer=11pm,idle.")
+
+        if schedule_time:
+            render_message(
+                self.console,
+                f"Отложенный запуск: ожидание до {schedule_time.strftime('%H:%M')} "
+                f"(Ctrl+\\ для отмены)...",
+                style="yellow",
+            )
+            while True:
+                remaining = (schedule_time - self._now_fn()).total_seconds()
+                if remaining <= 0:
+                    break
+                self._sleep_fn(min(remaining, 30))
+
+        if wait_for_idle:
+            render_message(
+                self.console,
+                f"Ожидание свободных раннеров (интервал: {poll_minutes} мин)...",
+                style="yellow",
+            )
+            while True:
+                load = self._compute_runner_load()
+                if load.pressure == "Свободно":
+                    render_message(self.console, "Раннеры свободны — отправляю.", style="green")
+                    break
+                render_message(
+                    self.console,
+                    f"Раннеры заняты (queued: {load.queued}, in_progress: {load.in_progress}), "
+                    f"следующая проверка через {poll_minutes} мин...",
+                    style="yellow",
+                )
+                self._sleep_fn(poll_minutes * 60)
+
+        self._do_dispatch(workflow, ref, inputs)
 
     def _handle_run_form(self, args: list[str]) -> None:
         workflow = self._resolve_workflow(args)
@@ -222,8 +345,9 @@ class App:
             f"Run {run.id}\nName: {run.name}\nBranch: {run.head_branch or '-'}\nStatus: {run.status}\nConclusion: {run.conclusion or '-'}",
         )
 
-    def _handle_follow(self, args: list[str]) -> None:
+    def _handle_follow(self, args: list[str], options: dict[str, str] | None = None) -> None:
         run = self._resolve_run(args)
+        diagnose = self._option_enabled(options or {}, "diagnose")
         while True:
             current = self.github_client.get_run(run.id)
             render_message(
@@ -232,6 +356,8 @@ class App:
                 style="yellow" if current.status != "completed" else "green",
             )
             if current.status == "completed":
+                if diagnose and current.conclusion == "failure":
+                    self._handle_diagnose([str(run.id)])
                 break
             if self.config.poll_interval:
                 time.sleep(self.config.poll_interval)
@@ -371,8 +497,126 @@ class App:
         ]
         render_message(self.console, "\n".join(lines), style="yellow")
 
+    def _handle_diagnose(self, args: list[str]) -> None:
+        run = self._resolve_run(args)
+        jobs = self.github_client.list_jobs(run.id)
+        failed_jobs = [j for j in jobs if j.conclusion in {"failure", "timed_out"}]
+        if not failed_jobs:
+            render_message(self.console, f"Run {run.id}: упавших джобов не найдено.", style="yellow")
+            return
+
+        render_message(
+            self.console,
+            f"Упавших джобов: {len(failed_jobs)}. Скачиваю логи...",
+            style="yellow",
+        )
+        job_logs = self._load_job_logs(run.id)
+
+        prompt = self._build_diagnose_prompt(run, failed_jobs, job_logs)
+
+        render_message(
+            self.console,
+            f"Запускаю AI-анализ [{self.config.ai_command}]...",
+            style="yellow",
+        )
+        analysis = self._run_ai_subprocess(prompt)
+
+        report_path = self._save_diagnose_report(run, analysis)
+        render_message(
+            self.console,
+            f"Анализ сохранён: {report_path}",
+            style="green",
+        )
+
+    def _build_diagnose_prompt(
+        self,
+        run: WorkflowRunSummary,
+        failed_jobs: list[JobSummary],
+        job_logs: dict,
+    ) -> str:
+        lines: list[str] = [
+            "Ты — инженер DevOps. Ниже логи упавших джобов из GitHub Actions.",
+            "Проанализируй причины каждого падения и составь краткий отчёт строго на русском языке.",
+            "",
+            f"Воркфлоу: {run.name}",
+            f"Ветка: {run.head_branch or '-'}",
+            f"Ран: #{run.id}",
+            "",
+        ]
+        for job in failed_jobs:
+            log_entry = job_logs.get(job.id)
+            raw_log = log_entry.content if log_entry else "(лог недоступен)"
+            log_tail = _tail_lines(raw_log, self.config.max_log_lines_per_job)
+            failed_step = next(
+                (s.name for s in reversed(job.steps) if s.conclusion in {"failure", "timed_out"}),
+                "-",
+            )
+            lines += [
+                f"== Джоба: {job.name} ==",
+                f"Статус: {job.conclusion}",
+                f"Упавший шаг: {failed_step}",
+                f"--- Лог (последние {self.config.max_log_lines_per_job} строк) ---",
+                log_tail,
+                "---",
+                "",
+            ]
+        lines += [
+            "Формат ответа — для каждой джобы:",
+            "**<название джобы>**",
+            "- Причина: <краткое объяснение>",
+            "- Точка отказа: <файл/команда/шаг>",
+            "- Рекомендация: <что исправить>",
+        ]
+        return "\n".join(lines)
+
+    def _run_ai_subprocess(self, prompt: str) -> str:
+        cmd = [self.config.ai_command, *self.config.ai_command_args.split(), prompt]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.config.ai_timeout,
+            )
+        except FileNotFoundError:
+            raise ValueError(
+                f"AI-инструмент не найден: {self.config.ai_command!r}. "
+                "Проверьте GH_ACTIONS_AI_COMMAND."
+            )
+        except subprocess.TimeoutExpired:
+            raise ValueError(
+                f"AI-инструмент не ответил за {self.config.ai_timeout} сек. "
+                "Увеличьте GH_ACTIONS_AI_TIMEOUT."
+            )
+        if result.returncode != 0:
+            detail = result.stderr.strip()[:200] or "(нет вывода)"
+            raise ValueError(f"AI-инструмент завершился с ошибкой: {detail}")
+        return result.stdout.strip()
+
+    def _save_diagnose_report(self, run: WorkflowRunSummary, analysis: str) -> Path:
+        output_dir = Path(self.config.diagnose_output_dir).expanduser()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^\w.-]", "_", run.name or "workflow")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"{run.id}-{safe_name}-{timestamp}.md"
+        report_path = output_dir / filename
+        header = "\n".join([
+            f"# Анализ падения: {run.name} #{run.id}",
+            f"Дата: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Ветка: {run.head_branch or '-'}",
+            "",
+            "---",
+            "",
+        ])
+        report_path.write_text(header + analysis, encoding="utf-8")
+        return report_path
+
     def _handle_runner_load(self, options: dict[str, str]) -> None:
         limit = int(options.get("limit", "100"))
+        summary = self._compute_runner_load(limit=limit)
+        render_runner_load(self.console, summary)
+
+    def _compute_runner_load(self, limit: int = 100) -> RunnerLoadSummary:
         runs = self.github_client.list_repository_runs(limit=limit)
         active_runs = [run for run in runs if run.status in {"queued", "in_progress", "pending", "waiting"}]
         queued = sum(1 for run in active_runs if run.status == "queued")
@@ -390,7 +634,7 @@ class App:
                 item.queued += 1
             elif run.status == "in_progress":
                 item.in_progress += 1
-        summary = RunnerLoadSummary(
+        return RunnerLoadSummary(
             queued=queued,
             in_progress=in_progress,
             total_active=queued + in_progress,
@@ -401,7 +645,6 @@ class App:
                 reverse=True,
             ),
         )
-        render_runner_load(self.console, summary)
 
     def _resolve_workflow(self, args: list[str]) -> WorkflowSummary:
         if not args:
