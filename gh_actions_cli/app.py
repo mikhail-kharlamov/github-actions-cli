@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime
+import os
 import re
+import select
 import subprocess
 import time
 from pathlib import Path
@@ -66,6 +68,11 @@ def _parse_defer_time(time_str: str, now_fn: Callable[[], datetime.datetime]) ->
         return dt
 
     return None
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences and carriage returns produced by a PTY."""
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\r", "", text)
 
 
 def _tail_lines(text: str, n: int) -> str:
@@ -570,13 +577,84 @@ class App:
         return "\n".join(lines)
 
     def _run_ai_subprocess(self, prompt: str) -> str:
-        cmd = [self.config.ai_command, *self.config.ai_command_args.split(), prompt]
+        args = [a for a in self.config.ai_command_args.split() if a]
+        cmd = [self.config.ai_command, *args, prompt]
+        try:
+            import pty  # Unix-only; graceful fallback below if unavailable
+            return self._run_ai_pty(cmd)
+        except ImportError:
+            return self._run_ai_plain(cmd)
+
+    def _run_ai_pty(self, cmd: list[str]) -> str:
+        """Run the AI tool through a pseudo-TTY so isatty(stdout) returns True."""
+        master_fd, slave_fd = pty.openpty()  # type: ignore[name-defined]  # imported above
+        chunks: list[bytes] = []
+        proc: subprocess.Popen | None = None
+        try:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=True,
+                )
+            except FileNotFoundError:
+                raise ValueError(
+                    f"AI-инструмент не найден: {self.config.ai_command!r}. "
+                    "Проверьте GH_ACTIONS_AI_COMMAND."
+                )
+            finally:
+                os.close(slave_fd)  # parent does not need the slave end
+
+            deadline = time.monotonic() + self.config.ai_timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    proc.kill()
+                    raise ValueError(
+                        f"AI-инструмент не ответил за {self.config.ai_timeout} сек. "
+                        "Увеличьте GH_ACTIONS_AI_TIMEOUT."
+                    )
+                ready, _, _ = select.select([master_fd], [], [], min(remaining, 1.0))
+                if ready:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        if chunk:
+                            chunks.append(chunk)
+                    except OSError:
+                        break  # slave closed — process exited
+                if proc.poll() is not None:
+                    # Drain any last bytes still in the buffer
+                    try:
+                        while select.select([master_fd], [], [], 0)[0]:
+                            chunk = os.read(master_fd, 4096)
+                            if chunk:
+                                chunks.append(chunk)
+                            else:
+                                break
+                    except OSError:
+                        pass
+                    break
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+        raw = b"".join(chunks).decode("utf-8", errors="replace")
+        output = _strip_ansi(raw).strip()
+
+        if proc is not None and proc.returncode != 0:
+            detail = output[:200] or "(нет вывода)"
+            raise ValueError(f"AI-инструмент завершился с ошибкой: {detail}")
+        return output
+
+    def _run_ai_plain(self, cmd: list[str]) -> str:
+        """Fallback for systems without pty (e.g. Windows)."""
         try:
             result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.config.ai_timeout,
+                cmd, capture_output=True, text=True, timeout=self.config.ai_timeout
             )
         except FileNotFoundError:
             raise ValueError(
