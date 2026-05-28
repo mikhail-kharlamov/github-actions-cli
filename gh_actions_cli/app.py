@@ -587,7 +587,8 @@ class App:
 
     def _run_ai_pty(self, cmd: list[str]) -> str:
         """Run the AI tool through a pseudo-TTY so isatty(stdout) returns True."""
-        master_fd, slave_fd = pty.openpty()  # type: ignore[name-defined]  # imported above
+        import pty
+        master_fd, slave_fd = pty.openpty()
         chunks: list[bytes] = []
         proc: subprocess.Popen | None = None
         try:
