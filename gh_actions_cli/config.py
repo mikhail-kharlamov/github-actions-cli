@@ -19,7 +19,7 @@ class AppConfig:
     default_branch: str | None
     # AI diagnosis settings
     ai_command: str = "codex"
-    ai_command_args: str = ""
+    ai_command_args: str = "exec --skip-git-repo-check --color never"
     diagnose_output_dir: str = "~/.gh-actions-diagnoses"
     max_log_lines_per_job: int = 150
     ai_timeout: int = 120
@@ -48,7 +48,7 @@ def load_config() -> AppConfig:
         poll_interval=poll_interval,
         default_branch=default_branch,
         ai_command=os.environ.get("GH_ACTIONS_AI_COMMAND", "codex"),
-        ai_command_args=os.environ.get("GH_ACTIONS_AI_COMMAND_ARGS", ""),
+        ai_command_args=os.environ.get("GH_ACTIONS_AI_COMMAND_ARGS", "exec --skip-git-repo-check --color never"),
         diagnose_output_dir=os.environ.get("GH_ACTIONS_DIAGNOSE_DIR", "~/.gh-actions-diagnoses"),
         max_log_lines_per_job=int(os.environ.get("GH_ACTIONS_MAX_LOG_LINES", "150")),
         ai_timeout=int(os.environ.get("GH_ACTIONS_AI_TIMEOUT", "120")),

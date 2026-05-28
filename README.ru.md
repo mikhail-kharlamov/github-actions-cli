@@ -32,7 +32,7 @@ export GITHUB_REPOSITORY=owner/repo
 | `GH_ACTIONS_POLL_INTERVAL` | `5` | Интервал polling в секундах для `/follow` и `/follow-logs`. |
 | `GH_ACTIONS_DEFAULT_BRANCH` | — | Fallback branch, если GitHub не вернул default branch. |
 | `GH_ACTIONS_AI_COMMAND` | `codex` | CLI-инструмент, используемый в `/diagnose`. Должен принимать промпт последним позиционным аргументом. |
-| `GH_ACTIONS_AI_COMMAND_ARGS` | _(пусто)_ | Аргументы через пробел перед промптом. По умолчанию пусто (`codex "промпт"`). Для `claude` нужно установить в `-p`. |
+| `GH_ACTIONS_AI_COMMAND_ARGS` | `exec --skip-git-repo-check --color never` | Аргументы через пробел перед промптом. Дефолт настроен под `codex exec`. Для `claude` нужно установить в `-p`. |
 | `GH_ACTIONS_DIAGNOSE_DIR` | `~/.gh-actions-diagnoses` | Папка, куда `/diagnose` сохраняет Markdown-отчёты. |
 | `GH_ACTIONS_MAX_LOG_LINES` | `150` | Максимальное число строк лога на джобу, передаваемых AI-инструменту. |
 | `GH_ACTIONS_AI_TIMEOUT` | `120` | Таймаут в секундах для subprocess-вызова AI. |
@@ -185,7 +185,7 @@ gh-actions-cli
 - Рекомендация: проверить мок для refresh_token в строке 47
 ```
 
-**Смена AI-инструмента.** По умолчанию вызывается `codex "<промпт>"` (без дополнительных флагов). Чтобы использовать `claude`:
+**Смена AI-инструмента.** По умолчанию вызывается `codex exec --skip-git-repo-check --color never`. Чтобы использовать `claude`:
 
 ```bash
 export GH_ACTIONS_AI_COMMAND=claude

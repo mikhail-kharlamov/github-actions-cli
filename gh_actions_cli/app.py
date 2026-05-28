@@ -111,7 +111,7 @@ HELP_TEXT = """\
 
 Переменные окружения для диагностики:
   GH_ACTIONS_AI_COMMAND      команда AI-инструмента (по умолч. codex)
-  GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. пусто; для claude: -p)
+  GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. exec --skip-git-repo-check --color never)
   GH_ACTIONS_DIAGNOSE_DIR    куда сохранять отчёты (по умолч. ~/.gh-actions-diagnoses)
   GH_ACTIONS_MAX_LOG_LINES   строк лога на джобу (по умолч. 150)
   GH_ACTIONS_AI_TIMEOUT      таймаут в секундах (по умолч. 120)
@@ -577,100 +577,43 @@ class App:
         return "\n".join(lines)
 
     def _run_ai_subprocess(self, prompt: str) -> str:
+        import tempfile
         args = [a for a in self.config.ai_command_args.split() if a]
-        cmd = [self.config.ai_command, *args, prompt]
+        # Write final response to a temp file via -o so we only get the
+        # answer, not the full verbose session log that goes to stdout.
+        # Prompt is fed via stdin ("-") to avoid shell arg-length limits.
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tf:
+            output_path = Path(tf.name)
         try:
-            import pty  # Unix-only; graceful fallback below if unavailable
-            return self._run_ai_pty(cmd)
-        except ImportError:
-            return self._run_ai_plain(cmd)
-
-    def _run_ai_pty(self, cmd: list[str]) -> str:
-        """Run the AI tool through a pseudo-TTY so isatty(stdout) returns True."""
-        import pty
-        master_fd, slave_fd = pty.openpty()
-        chunks: list[bytes] = []
-        proc: subprocess.Popen | None = None
-        try:
+            cmd = [self.config.ai_command, *args, "-o", str(output_path), "-"]
             try:
-                proc = subprocess.Popen(
+                result = subprocess.run(
                     cmd,
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    close_fds=True,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.config.ai_timeout,
                 )
             except FileNotFoundError:
                 raise ValueError(
                     f"AI-инструмент не найден: {self.config.ai_command!r}. "
                     "Проверьте GH_ACTIONS_AI_COMMAND."
                 )
-            finally:
-                os.close(slave_fd)  # parent does not need the slave end
-
-            deadline = time.monotonic() + self.config.ai_timeout
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    proc.kill()
-                    raise ValueError(
-                        f"AI-инструмент не ответил за {self.config.ai_timeout} сек. "
-                        "Увеличьте GH_ACTIONS_AI_TIMEOUT."
-                    )
-                ready, _, _ = select.select([master_fd], [], [], min(remaining, 1.0))
-                if ready:
-                    try:
-                        chunk = os.read(master_fd, 4096)
-                        if chunk:
-                            chunks.append(chunk)
-                    except OSError:
-                        break  # slave closed — process exited
-                if proc.poll() is not None:
-                    # Drain any last bytes still in the buffer
-                    try:
-                        while select.select([master_fd], [], [], 0)[0]:
-                            chunk = os.read(master_fd, 4096)
-                            if chunk:
-                                chunks.append(chunk)
-                            else:
-                                break
-                    except OSError:
-                        pass
-                    break
+            except subprocess.TimeoutExpired:
+                raise ValueError(
+                    f"AI-инструмент не ответил за {self.config.ai_timeout} сек. "
+                    "Увеличьте GH_ACTIONS_AI_TIMEOUT."
+                )
+            if result.returncode != 0:
+                detail = _strip_ansi(result.stderr or result.stdout).strip()[:300] or "(нет вывода)"
+                raise ValueError(f"AI-инструмент завершился с ошибкой: {detail}")
+            output = output_path.read_text(encoding="utf-8").strip()
+            if not output:
+                # -o not supported by this tool — fall back to stdout
+                output = _strip_ansi(result.stdout).strip()
+            return output
         finally:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-
-        raw = b"".join(chunks).decode("utf-8", errors="replace")
-        output = _strip_ansi(raw).strip()
-
-        if proc is not None and proc.returncode != 0:
-            detail = output[:200] or "(нет вывода)"
-            raise ValueError(f"AI-инструмент завершился с ошибкой: {detail}")
-        return output
-
-    def _run_ai_plain(self, cmd: list[str]) -> str:
-        """Fallback for systems without pty (e.g. Windows)."""
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.config.ai_timeout
-            )
-        except FileNotFoundError:
-            raise ValueError(
-                f"AI-инструмент не найден: {self.config.ai_command!r}. "
-                "Проверьте GH_ACTIONS_AI_COMMAND."
-            )
-        except subprocess.TimeoutExpired:
-            raise ValueError(
-                f"AI-инструмент не ответил за {self.config.ai_timeout} сек. "
-                "Увеличьте GH_ACTIONS_AI_TIMEOUT."
-            )
-        if result.returncode != 0:
-            detail = result.stderr.strip()[:200] or "(нет вывода)"
-            raise ValueError(f"AI-инструмент завершился с ошибкой: {detail}")
-        return result.stdout.strip()
+            output_path.unlink(missing_ok=True)
 
     def _save_diagnose_report(self, run: WorkflowRunSummary, analysis: str) -> Path:
         output_dir = Path(self.config.diagnose_output_dir).expanduser()
