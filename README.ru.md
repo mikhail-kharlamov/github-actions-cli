@@ -31,7 +31,7 @@ export GITHUB_REPOSITORY=owner/repo
 | `GITHUB_API_URL` | `https://api.github.com` | Адрес GitHub API. |
 | `GH_ACTIONS_POLL_INTERVAL` | `5` | Интервал polling в секундах для `/follow` и `/follow-logs`. |
 | `GH_ACTIONS_DEFAULT_BRANCH` | — | Fallback branch, если GitHub не вернул default branch. |
-| `GH_ACTIONS_AI_COMMAND` | `claude` | CLI-инструмент, используемый в `/diagnose`. Должен принимать промпт последним позиционным аргументом. |
+| `GH_ACTIONS_AI_COMMAND` | `codex` | CLI-инструмент, используемый в `/diagnose`. Должен принимать промпт последним позиционным аргументом. |
 | `GH_ACTIONS_AI_COMMAND_ARGS` | `-p` | Аргументы через пробел, добавляемые перед промптом при вызове AI-инструмента. |
 | `GH_ACTIONS_DIAGNOSE_DIR` | `~/.gh-actions-diagnoses` | Папка, куда `/diagnose` сохраняет Markdown-отчёты. |
 | `GH_ACTIONS_MAX_LOG_LINES` | `150` | Максимальное число строк лога на джобу, передаваемых AI-инструменту. |
@@ -185,11 +185,11 @@ gh-actions-cli
 - Рекомендация: проверить мок для refresh_token в строке 47
 ```
 
-**Смена AI-инструмента.** По умолчанию вызывается `claude -p "<промпт>"`. Чтобы использовать другой инструмент:
+**Смена AI-инструмента.** По умолчанию вызывается `codex -p "<промпт>"`. Чтобы использовать другой инструмент:
 
 ```bash
-export GH_ACTIONS_AI_COMMAND=codex
-export GH_ACTIONS_AI_COMMAND_ARGS=""   # если инструмент читает промпт как первый позиционный аргумент
+export GH_ACTIONS_AI_COMMAND=claude
+export GH_ACTIONS_AI_COMMAND_ARGS="-p"
 ```
 
 Инструмент должен принимать полный промпт последним позиционным аргументом и писать ответ в stdout.

@@ -103,7 +103,7 @@ HELP_TEXT = """\
 /quit                        выйти
 
 Переменные окружения для диагностики:
-  GH_ACTIONS_AI_COMMAND      команда AI-инструмента (по умолч. claude)
+  GH_ACTIONS_AI_COMMAND      команда AI-инструмента (по умолч. codex)
   GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. -p)
   GH_ACTIONS_DIAGNOSE_DIR    куда сохранять отчёты (по умолч. ~/.gh-actions-diagnoses)
   GH_ACTIONS_MAX_LOG_LINES   строк лога на джобу (по умолч. 150)
