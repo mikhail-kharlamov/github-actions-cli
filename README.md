@@ -32,7 +32,7 @@ Optional:
 | `GH_ACTIONS_POLL_INTERVAL` | `5` | Polling interval in seconds for `/follow` and `/follow-logs`. |
 | `GH_ACTIONS_DEFAULT_BRANCH` | — | Fallback branch when GitHub does not return the default branch. |
 | `GH_ACTIONS_AI_COMMAND` | `codex` | CLI tool used by `/diagnose`. Must accept the prompt as a final positional argument. |
-| `GH_ACTIONS_AI_COMMAND_ARGS` | `-p` | Space-separated arguments placed before the prompt when calling the AI tool. |
+| `GH_ACTIONS_AI_COMMAND_ARGS` | _(empty)_ | Space-separated arguments placed before the prompt. Empty by default (`codex "prompt"`). Set to `-p` when using `claude`. |
 | `GH_ACTIONS_DIAGNOSE_DIR` | `~/.gh-actions-diagnoses` | Directory where `/diagnose` saves Markdown reports. |
 | `GH_ACTIONS_MAX_LOG_LINES` | `150` | Maximum log lines per job sent to the AI tool. |
 | `GH_ACTIONS_AI_TIMEOUT` | `120` | Timeout in seconds for the AI subprocess call. |
@@ -185,7 +185,7 @@ Branch: main
 - Recommendation: check the refresh_token mock at line 47
 ```
 
-**Changing the AI tool.** By default the command calls `codex -p "<prompt>"`. To use a different tool:
+**Changing the AI tool.** By default the command calls `codex "<prompt>"` (no extra flags). To use `claude`:
 
 ```bash
 export GH_ACTIONS_AI_COMMAND=claude

@@ -104,7 +104,7 @@ HELP_TEXT = """\
 
 Переменные окружения для диагностики:
   GH_ACTIONS_AI_COMMAND      команда AI-инструмента (по умолч. codex)
-  GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. -p)
+  GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. пусто; для claude: -p)
   GH_ACTIONS_DIAGNOSE_DIR    куда сохранять отчёты (по умолч. ~/.gh-actions-diagnoses)
   GH_ACTIONS_MAX_LOG_LINES   строк лога на джобу (по умолч. 150)
   GH_ACTIONS_AI_TIMEOUT      таймаут в секундах (по умолч. 120)
