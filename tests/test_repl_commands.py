@@ -242,6 +242,48 @@ def test_cancel_run_command_cancels_selected_run() -> None:
     assert client.cancelled_runs == [301]
 
 
+def test_run_status_shows_current_step_for_in_progress_run() -> None:
+    app, console, client = _make_app()
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="in_progress", conclusion=None, head_branch="main",
+    )
+    client.list_jobs = lambda run_id: [
+        JobSummary(
+            id=201, run_id=run_id, name="run-java", status="in_progress", conclusion=None,
+            steps=[
+                StepSummary(number=1, name="Checkout", status="completed", conclusion="success"),
+                StepSummary(number=2, name="Run benchmark", status="in_progress"),
+                StepSummary(number=3, name="Upload results", status="queued"),
+            ],
+        ),
+        JobSummary(id=202, run_id=run_id, name="run-python", status="queued", conclusion=None),
+    ]
+
+    app.handle_line("/run-status 1")
+
+    output = console.export_text()
+    assert "run-java" in output
+    assert "step 2/3: Run benchmark" in output
+    assert "run-python" in output
+    assert "queued" in output
+    assert app.session.job_index[1].name == "run-java"
+
+
+def test_run_status_omits_jobs_for_completed_run() -> None:
+    app, console, client = _make_app()
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="completed", conclusion="success", head_branch="main",
+    )
+    calls = []
+    client.list_jobs = lambda run_id: calls.append(run_id) or []
+
+    app.handle_line("/run-status 1")
+
+    assert calls == []
+    output = console.export_text()
+    assert "Jobs" not in output
+
+
 def test_logs_command_writes_job_log_to_file(tmp_path: Path) -> None:
     app, _console, _client = _make_app()
     app.session.job_index[1] = JobSummary(

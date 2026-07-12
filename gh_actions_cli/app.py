@@ -81,6 +81,21 @@ def _tail_lines(text: str, n: int) -> str:
     return "\n".join(lines[-n:]) if len(lines) > n else text
 
 
+def _job_progress_label(job: JobSummary) -> str:
+    """Describe where a job currently stands, e.g. 'step 4/12: Run benchmark'."""
+    if job.status == "queued":
+        return "queued"
+    if job.status == "completed":
+        return job.conclusion or "completed"
+    current = next((step for step in job.steps if step.status == "in_progress"), None)
+    if current is not None:
+        return f"step {current.number}/{len(job.steps)}: {current.name}"
+    if job.steps:
+        completed = sum(1 for step in job.steps if step.status == "completed")
+        return f"step {completed}/{len(job.steps)} done, waiting for next"
+    return "running"
+
+
 HELP_TEXT = """\
 /help                        показать список команд
 /workflows                   получить список workflow
@@ -93,7 +108,7 @@ HELP_TEXT = """\
   poll=N              — интервал проверки в минутах (по умолчанию 10)
 /run-form <workflow>         интерактивный запуск workflow
 /runs <workflow> [limit=10]  последние run-ы workflow
-/run-status <run-id>         статус конкретного run
+/run-status <run-id>         статус run; если ещё выполняется — на каком шаге каждая джоба
 /follow <run-id> [diagnose=true]  следить за статусом run; при падении авто-запускает /diagnose
 /jobs <run-id>               jobs конкретного run
 /steps <job-id>              steps конкретного job
@@ -347,10 +362,22 @@ class App:
 
     def _handle_run_status(self, args: list[str]) -> None:
         run = self._resolve_run(args)
-        render_message(
-            self.console,
-            f"Run {run.id}\nName: {run.name}\nBranch: {run.head_branch or '-'}\nStatus: {run.status}\nConclusion: {run.conclusion or '-'}",
-        )
+        lines = [
+            f"Run {run.id}",
+            f"Name: {run.name}",
+            f"Branch: {run.head_branch or '-'}",
+            f"Status: {run.status}",
+            f"Conclusion: {run.conclusion or '-'}",
+        ]
+        if run.status != "completed":
+            jobs = self.github_client.list_jobs(run.id)
+            self.session.job_index = {index: item for index, item in enumerate(jobs, start=1)}
+            if jobs:
+                lines.append("")
+                lines.append("Jobs:")
+                for index, job in enumerate(jobs, start=1):
+                    lines.append(f"  #{index} {job.name}: {_job_progress_label(job)}")
+        render_message(self.console, "\n".join(lines))
 
     def _handle_follow(self, args: list[str], options: dict[str, str] | None = None) -> None:
         run = self._resolve_run(args)
