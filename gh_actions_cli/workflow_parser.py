@@ -4,6 +4,7 @@ from collections import OrderedDict
 
 import yaml
 
+from gh_actions_cli.i18n import t
 from gh_actions_cli.models import WorkflowDispatchInput
 
 
@@ -15,7 +16,7 @@ def extract_workflow_dispatch_inputs(yaml_text: str) -> list[WorkflowDispatchInp
     try:
         payload = yaml.safe_load(yaml_text) or {}
     except yaml.YAMLError as error:
-        raise WorkflowParseError("Не удалось распарсить workflow YAML.") from error
+        raise WorkflowParseError(t("workflow_parser.parse_failed")) from error
 
     on_section = payload.get("on") or payload.get(True) or {}
     if not isinstance(on_section, dict):

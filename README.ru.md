@@ -49,6 +49,32 @@ python -m gh_actions_cli
 gh-actions-cli
 ```
 
+## MCP-сервер
+
+`gh-actions-cli` также включает [MCP](https://modelcontextprotocol.io)-сервер, который отдаёт ту же функциональность GitHub Actions в виде тулов для агентов: список воркфлоу, запуск дispatch, статус ранов и джобов, логи джобов и шагов, список/скачивание артефактов, загрузка раннеров.
+
+Запуск напрямую:
+
+```bash
+gh-actions-mcp
+```
+
+или без установленного entry point:
+
+```bash
+python -m gh_actions_cli.mcp_server
+```
+
+Сервер читает те же переменные окружения, что и CLI (`GITHUB_PAT`, `GITHUB_REPOSITORY` и т.д. — см. [Переменные окружения](#переменные-окружения)), и общается по MCP через stdio, поэтому его можно подключить к любому MCP-совместимому клиенту. Например, в Claude Code:
+
+```bash
+claude mcp add gh-actions -- gh-actions-mcp
+```
+
+(переменные `GITHUB_PAT` и `GITHUB_REPOSITORY` нужно задать в окружении, где запускается `claude`, либо передать через `--env KEY=VALUE` в конфиге MCP клиента).
+
+Доступные тулы: `list_workflows`, `get_workflow_dispatch_inputs`, `dispatch_workflow`, `list_runs`, `get_run`, `cancel_run`, `list_jobs`, `get_job_log`, `get_step_log`, `list_artifacts`, `download_artifact`, `get_runner_load`.
+
 ## Горячие клавиши
 
 - `Ctrl+\` - остановить текущую команду на macOS/Linux и вернуться к prompt

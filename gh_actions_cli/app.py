@@ -16,6 +16,7 @@ from gh_actions_cli.artifacts import extract_artifact_zip
 from gh_actions_cli.commands import CommandError, parse_command
 from gh_actions_cli.config import AppConfig
 from gh_actions_cli.github_api import GitHubAPIError
+from gh_actions_cli.i18n import get_language, set_language, t
 from gh_actions_cli.logs import extract_job_logs, extract_step_log
 from gh_actions_cli.models import (
     ArtifactSummary,
@@ -96,45 +97,8 @@ def _job_progress_label(job: JobSummary) -> str:
     return "running"
 
 
-HELP_TEXT = """\
-/help                        показать список команд
-/workflows                   получить список workflow
-/workflow <workflow>         показать детали workflow
-/dispatch-inputs <workflow>  показать workflow_dispatch inputs
-/run <workflow> [ref=...] [defer=idle|TIME|TIME,idle] [poll=10] [key=value ...]
-  defer=idle          — ждать, пока раннеры свободны, затем запустить
-  defer=11pm          — запустить ровно в указанное время (11pm / 23:00 / 11:30pm)
-  defer=11pm,idle     — начать проверку раннеров с указанного времени
-  poll=N              — интервал проверки в минутах (по умолчанию 10)
-/run-form <workflow>         интерактивный запуск workflow
-/runs <workflow> [limit=10]  последние run-ы workflow
-/run-status <run-id>         статус run; если ещё выполняется — на каком шаге каждая джоба
-/follow <run-id> [diagnose=true]  следить за статусом run; при падении авто-запускает /diagnose
-/jobs <run-id>               jobs конкретного run
-/steps <job-id>              steps конкретного job
-/logs <job-id>               лог job целиком
-/step-log <job-id> <step>    лог одного шага
-/follow-logs <job-id>        обновлять лог job до завершения
-/artifacts <run-id>          список артефактов run
-/download-artifacts <run-id> <artifact...> [dir=...]  скачать выбранные артефакты
-/cancel-run <run-id>         остановить run
-/run-args <run-id>           показать аргументы запуска run
-/runner-load [limit=100]     показать текущую загрузку раннеров по репозиторию
-/diagnose <run-id>           AI-анализ упавших джобов, сохраняет отчёт в файл
-/clear                       очистить экран
-/quit                        выйти
-
-Переменные окружения для диагностики:
-  GH_ACTIONS_AI_COMMAND      команда AI-инструмента (по умолч. codex)
-  GH_ACTIONS_AI_COMMAND_ARGS аргументы перед промптом (по умолч. exec --skip-git-repo-check --color never)
-  GH_ACTIONS_DIAGNOSE_DIR    куда сохранять отчёты (по умолч. ~/.gh-actions-diagnoses)
-  GH_ACTIONS_MAX_LOG_LINES   строк лога на джобу (по умолч. 150)
-  GH_ACTIONS_AI_TIMEOUT      таймаут в секундах (по умолч. 120)
-
-Горячие клавиши:
-Ctrl+\\                      остановить текущую команду на macOS/Linux
-Ctrl+C                       выйти из CLI
-"""
+def _help_text() -> str:
+    return t("help.text", language=get_language())
 
 
 class GitHubClientProtocol(Protocol):
@@ -173,7 +137,9 @@ class App:
 
     def _dispatch(self, name: str, args: list[str], options: dict[str, str]) -> bool:
         if name == "help":
-            render_message(self.console, HELP_TEXT)
+            render_message(self.console, _help_text())
+        elif name == "lang":
+            self._handle_lang(args)
         elif name == "quit":
             return False
         elif name == "clear":
@@ -218,6 +184,13 @@ class App:
             self._handle_diagnose(args)
         return True
 
+    def _handle_lang(self, args: list[str]) -> None:
+        if not args:
+            render_message(self.console, t("lang.switched", language=get_language()))
+            return
+        set_language(args[0])
+        render_message(self.console, t("lang.switched", language=get_language()), style="green")
+
     def _handle_workflows(self) -> None:
         workflows = self.github_client.list_workflows()
         self.session.workflow_index = {index: item for index, item in enumerate(workflows, start=1)}
@@ -234,7 +207,7 @@ class App:
         workflow = self._resolve_workflow(args)
         inputs = self._load_workflow_inputs(workflow)
         if not inputs:
-            render_message(self.console, "У workflow нет workflow_dispatch inputs.", style="yellow")
+            render_message(self.console, t("dispatch_inputs.none"), style="yellow")
             return
         render_dispatch_inputs(self.console, inputs)
 
@@ -261,7 +234,7 @@ class App:
                 inputs=inputs,
             ),
         )
-        render_message(self.console, f"Workflow {workflow.name} отправлен с ref={ref}.", style="green")
+        render_message(self.console, t("dispatch.sent_with_ref", name=workflow.name, ref=ref), style="green")
 
     def _deferred_dispatch(
         self,
@@ -281,19 +254,15 @@ class App:
             else:
                 schedule_time = _parse_defer_time(part, self._now_fn)
                 if schedule_time is None:
-                    raise ValueError(
-                        f"Не удалось распознать время: {part!r}. "
-                        "Используйте формат 11pm, 11:30pm или 23:00."
-                    )
+                    raise ValueError(t("defer.bad_time", part=part))
 
         if not schedule_time and not wait_for_idle:
-            raise ValueError("Укажите defer=idle, defer=11pm или defer=11pm,idle.")
+            raise ValueError(t("defer.missing"))
 
         if schedule_time:
             render_message(
                 self.console,
-                f"Отложенный запуск: ожидание до {schedule_time.strftime('%H:%M')} "
-                f"(Ctrl+\\ для отмены)...",
+                t("defer.waiting_until", time=schedule_time.strftime("%H:%M")),
                 style="yellow",
             )
             while True:
@@ -305,18 +274,22 @@ class App:
         if wait_for_idle:
             render_message(
                 self.console,
-                f"Ожидание свободных раннеров (интервал: {poll_minutes} мин)...",
+                t("defer.waiting_idle", minutes=poll_minutes),
                 style="yellow",
             )
             while True:
                 load = self._compute_runner_load()
-                if load.pressure == "Свободно":
-                    render_message(self.console, "Раннеры свободны — отправляю.", style="green")
+                if load.pressure == "free":
+                    render_message(self.console, t("defer.runners_free"), style="green")
                     break
                 render_message(
                     self.console,
-                    f"Раннеры заняты (queued: {load.queued}, in_progress: {load.in_progress}), "
-                    f"следующая проверка через {poll_minutes} мин...",
+                    t(
+                        "defer.runners_busy",
+                        queued=load.queued,
+                        in_progress=load.in_progress,
+                        minutes=poll_minutes,
+                    ),
                     style="yellow",
                 )
                 self._sleep_fn(poll_minutes * 60)
@@ -327,9 +300,9 @@ class App:
         workflow = self._resolve_workflow(args)
         inputs = self._load_workflow_inputs(workflow)
         if not inputs:
-            raise ValueError("У workflow нет workflow_dispatch inputs для интерактивного запуска.")
+            raise ValueError(t("run_form.no_inputs"))
         values: dict[str, str] = {}
-        ref = self.console.input("ref (Enter для default branch): ").strip() or self._default_ref()
+        ref = self.console.input(t("run_form.ref_prompt")).strip() or self._default_ref()
         for item in inputs:
             suffix = f" [{item.default}]" if item.default is not None else ""
             prompt = f"{item.name} ({item.type}){suffix}: "
@@ -337,7 +310,7 @@ class App:
             if not value and item.default is not None:
                 value = str(item.default)
             if not value and item.required:
-                raise ValueError(f"Поле {item.name} обязательно.")
+                raise ValueError(t("run_form.field_required", name=item.name))
             if value:
                 values[item.name] = self._normalize_input_value(item.type, value, item.options)
         self.github_client.dispatch_workflow(self._workflow_dispatch_target(workflow), ref, values)
@@ -351,7 +324,7 @@ class App:
                 inputs=values,
             ),
         )
-        render_message(self.console, f"Workflow {workflow.name} отправлен.", style="green")
+        render_message(self.console, t("run_form.dispatched", name=workflow.name), style="green")
 
     def _handle_runs(self, args: list[str], options: dict[str, str]) -> None:
         workflow = self._resolve_workflow(args)
@@ -408,7 +381,7 @@ class App:
             jobs = self.github_client.list_jobs(job.run_id)
             fresh_job = next((item for item in jobs if item.id == job.id), None)
             if fresh_job is None:
-                raise ValueError(f"Job {job.id} не найден.")
+                raise ValueError(t("job.not_found", id=job.id))
             job = fresh_job
             self.session.job_index = {
                 index: item if item.id != job.id else job
@@ -421,14 +394,14 @@ class App:
         job_logs = self._load_job_logs(job.run_id)
         selected = job_logs.get(job.id)
         if selected is None:
-            raise ValueError(f"Для job {job.id} не удалось найти лог.")
+            raise ValueError(t("job.log_not_found", id=job.id))
         if not self._option_enabled(options, "no_print"):
             self.console.print(selected.content)
         self._write_text_output(selected.content, options.get("file"))
 
     def _handle_step_log(self, args: list[str], options: dict[str, str]) -> None:
         if len(args) < 2:
-            raise ValueError("Нужно указать job и step.")
+            raise ValueError(t("steplog.args_required"))
         job = self._resolve_job(args[:1])
         if not job.steps:
             jobs = self.github_client.list_jobs(job.run_id)
@@ -436,12 +409,12 @@ class App:
         job_logs = self._load_job_logs(job.run_id)
         selected = job_logs.get(job.id)
         if selected is None:
-            raise ValueError(f"Для job {job.id} не удалось найти лог.")
+            raise ValueError(t("job.log_not_found", id=job.id))
         result = extract_step_log(selected.content, job, args[1])
         if result.fallback_used:
             render_message(
                 self.console,
-                f"Не удалось точно выделить шаг {result.step_name}, показываю лог job целиком.",
+                t("steplog.fallback", name=result.step_name),
                 style="yellow",
             )
         if not self._option_enabled(options, "no_print"):
@@ -472,7 +445,7 @@ class App:
 
     def _handle_download_artifacts(self, args: list[str], options: dict[str, str]) -> None:
         if len(args) < 2:
-            raise ValueError("Нужно указать run и хотя бы один артефакт или all.")
+            raise ValueError(t("artifacts.args_required"))
         run = self._resolve_run(args[:1])
         artifacts = self.github_client.list_run_artifacts(run.id)
         self.session.artifact_index = {index: item for index, item in enumerate(artifacts, start=1)}
@@ -486,14 +459,14 @@ class App:
             downloaded.append(str(destination))
         render_message(
             self.console,
-            "Скачано:\n" + "\n".join(downloaded),
+            t("artifacts.downloaded_header") + "\n".join(downloaded),
             style="green",
         )
 
     def _handle_cancel_run(self, args: list[str]) -> None:
         run = self._resolve_run(args)
         self.github_client.cancel_run(run.id)
-        render_message(self.console, f"Run {run.id} отправлен на остановку.", style="yellow")
+        render_message(self.console, t("cancel.sent", id=run.id), style="yellow")
 
     def _handle_run_args(self, args: list[str]) -> None:
         run = self._resolve_run(args)
@@ -527,7 +500,7 @@ class App:
             f"Commit: {head_sha}",
             f"Workflow ref: {path}",
             "inputs:",
-            "  GitHub API не возвращает workflow_dispatch inputs для чужих run в явном виде.",
+            t("run_args.no_inputs_hint"),
         ]
         render_message(self.console, "\n".join(lines), style="yellow")
 
@@ -536,12 +509,12 @@ class App:
         jobs = self.github_client.list_jobs(run.id)
         failed_jobs = [j for j in jobs if j.conclusion in {"failure", "timed_out"}]
         if not failed_jobs:
-            render_message(self.console, f"Run {run.id}: упавших джобов не найдено.", style="yellow")
+            render_message(self.console, t("diagnose.none_failed", id=run.id), style="yellow")
             return
 
         render_message(
             self.console,
-            f"Упавших джобов: {len(failed_jobs)}. Скачиваю логи...",
+            t("diagnose.downloading", count=len(failed_jobs)),
             style="yellow",
         )
         job_logs = self._load_job_logs(run.id)
@@ -550,7 +523,7 @@ class App:
 
         render_message(
             self.console,
-            f"Запускаю AI-анализ [{self.config.ai_command}]...",
+            t("diagnose.running_ai", command=self.config.ai_command),
             style="yellow",
         )
         analysis = self._run_ai_subprocess(prompt)
@@ -558,7 +531,7 @@ class App:
         report_path = self._save_diagnose_report(run, analysis)
         render_message(
             self.console,
-            f"Анализ сохранён: {report_path}",
+            t("diagnose.saved", path=report_path),
             style="green",
         )
 
@@ -569,37 +542,37 @@ class App:
         job_logs: dict,
     ) -> str:
         lines: list[str] = [
-            "Ты — инженер DevOps. Ниже логи упавших джобов из GitHub Actions.",
-            "Проанализируй причины каждого падения и составь краткий отчёт строго на русском языке.",
+            t("diagnose.prompt.intro"),
+            t("diagnose.prompt.instruction"),
             "",
-            f"Воркфлоу: {run.name}",
-            f"Ветка: {run.head_branch or '-'}",
-            f"Ран: #{run.id}",
+            t("diagnose.prompt.workflow_label", name=run.name),
+            t("diagnose.prompt.branch_label", branch=run.head_branch or "-"),
+            t("diagnose.prompt.run_label", id=run.id),
             "",
         ]
         for job in failed_jobs:
             log_entry = job_logs.get(job.id)
-            raw_log = log_entry.content if log_entry else "(лог недоступен)"
+            raw_log = log_entry.content if log_entry else t("diagnose.prompt.log_unavailable")
             log_tail = _tail_lines(raw_log, self.config.max_log_lines_per_job)
             failed_step = next(
                 (s.name for s in reversed(job.steps) if s.conclusion in {"failure", "timed_out"}),
                 "-",
             )
             lines += [
-                f"== Джоба: {job.name} ==",
-                f"Статус: {job.conclusion}",
-                f"Упавший шаг: {failed_step}",
-                f"--- Лог (последние {self.config.max_log_lines_per_job} строк) ---",
+                t("diagnose.prompt.job_header", name=job.name),
+                t("diagnose.prompt.job_status", conclusion=job.conclusion),
+                t("diagnose.prompt.job_failed_step", step=failed_step),
+                t("diagnose.prompt.job_log_header", n=self.config.max_log_lines_per_job),
                 log_tail,
                 "---",
                 "",
             ]
         lines += [
-            "Формат ответа — для каждой джобы:",
-            "**<название джобы>**",
-            "- Причина: <краткое объяснение>",
-            "- Точка отказа: <файл/команда/шаг>",
-            "- Рекомендация: <что исправить>",
+            t("diagnose.prompt.format_intro"),
+            t("diagnose.prompt.format_name"),
+            t("diagnose.prompt.format_reason"),
+            t("diagnose.prompt.format_failure_point"),
+            t("diagnose.prompt.format_recommendation"),
         ]
         return "\n".join(lines)
 
@@ -622,18 +595,12 @@ class App:
                     timeout=self.config.ai_timeout,
                 )
             except FileNotFoundError:
-                raise ValueError(
-                    f"AI-инструмент не найден: {self.config.ai_command!r}. "
-                    "Проверьте GH_ACTIONS_AI_COMMAND."
-                )
+                raise ValueError(t("ai.not_found", command=self.config.ai_command))
             except subprocess.TimeoutExpired:
-                raise ValueError(
-                    f"AI-инструмент не ответил за {self.config.ai_timeout} сек. "
-                    "Увеличьте GH_ACTIONS_AI_TIMEOUT."
-                )
+                raise ValueError(t("ai.timeout", seconds=self.config.ai_timeout))
             if result.returncode != 0:
-                detail = _strip_ansi(result.stderr or result.stdout).strip()[:300] or "(нет вывода)"
-                raise ValueError(f"AI-инструмент завершился с ошибкой: {detail}")
+                detail = _strip_ansi(result.stderr or result.stdout).strip()[:300] or t("ai.no_output")
+                raise ValueError(t("ai.failed", detail=detail))
             output = output_path.read_text(encoding="utf-8").strip()
             if not output:
                 # -o not supported by this tool — fall back to stdout
@@ -650,9 +617,9 @@ class App:
         filename = f"{run.id}-{safe_name}-{timestamp}.md"
         report_path = output_dir / filename
         header = "\n".join([
-            f"# Анализ падения: {run.name} #{run.id}",
-            f"Дата: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Ветка: {run.head_branch or '-'}",
+            t("report.title", name=run.name, id=run.id),
+            t("report.date", date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            t("report.branch", branch=run.head_branch or "-"),
             "",
             "---",
             "",
@@ -697,7 +664,7 @@ class App:
 
     def _resolve_workflow(self, args: list[str]) -> WorkflowSummary:
         if not args:
-            raise ValueError("Нужно указать workflow.")
+            raise ValueError(t("workflow.required"))
         token = args[0]
         if token.isdigit() and int(token) in self.session.workflow_index:
             return self.session.workflow_index[int(token)]
@@ -710,21 +677,21 @@ class App:
         for workflow in workflows:
             if Path(workflow.path).name == token:
                 return workflow
-        raise ValueError(f"Workflow {token} не найден.")
+        raise ValueError(t("workflow.not_found", token=token))
 
     def _resolve_run(self, args: list[str]) -> WorkflowRunSummary:
         if not args:
-            raise ValueError("Нужно указать run.")
+            raise ValueError(t("run.required"))
         token = args[0]
         if token.isdigit() and int(token) in self.session.run_index:
             return self.session.run_index[int(token)]
         if token.isdigit():
             return self.github_client.get_run(int(token))
-        raise ValueError("Run должен быть numeric id или индексом из последнего списка.")
+        raise ValueError(t("run.invalid_token"))
 
     def _resolve_job(self, args: list[str]) -> JobSummary:
         if not args:
-            raise ValueError("Нужно указать job.")
+            raise ValueError(t("job.required"))
         token = args[0]
         if token.isdigit() and int(token) in self.session.job_index:
             return self.session.job_index[int(token)]
@@ -733,7 +700,7 @@ class App:
             for job in self.session.job_index.values():
                 if job.id == job_id:
                     return job
-        raise ValueError("Job должен быть индексом из последнего списка /jobs.")
+        raise ValueError(t("job.invalid_token"))
 
     def _resolve_artifacts(self, selectors: list[str], artifacts: list[ArtifactSummary]) -> list[ArtifactSummary]:
         if selectors == ["all"]:
@@ -751,7 +718,7 @@ class App:
             if selector in by_name:
                 resolved.append(by_name[selector])
                 continue
-            raise ValueError(f"Артефакт {selector} не найден.")
+            raise ValueError(t("artifact.not_found", selector=selector))
         return resolved
 
     def _load_workflow_inputs(self, workflow: WorkflowSummary):
@@ -768,7 +735,7 @@ class App:
         path = Path(target_file).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        render_message(self.console, f"Лог сохранен в {path}", style="green")
+        render_message(self.console, t("logs.saved", path=path), style="green")
 
     @staticmethod
     def _option_enabled(options: dict[str, str], key: str) -> bool:
@@ -798,21 +765,21 @@ class App:
     @staticmethod
     def _runner_pressure(queued: int, in_progress: int) -> str:
         if queued >= 2 or queued + in_progress >= 4:
-            return "Перегружено"
+            return "overloaded"
         if queued >= 1 or in_progress >= 2:
-            return "Умеренно"
-        return "Свободно"
+            return "moderate"
+        return "free"
 
     @staticmethod
     def _normalize_input_value(input_type: str, value: str, options: list[str]) -> str:
         if input_type == "boolean":
             normalized = value.lower()
             if normalized not in {"true", "false"}:
-                raise ValueError("Boolean input должен быть true или false.")
+                raise ValueError(t("input.boolean_invalid"))
             return normalized
         if input_type == "number":
             float(value)
             return value
         if input_type == "choice" and options and value not in options:
-            raise ValueError(f"Допустимые значения: {', '.join(options)}")
+            raise ValueError(t("input.choice_invalid", options=", ".join(options)))
         return value

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from gh_actions_cli.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, set_language, t
+
 
 class ConfigError(RuntimeError):
     """Raised when required runtime configuration is missing."""
@@ -26,13 +28,16 @@ class AppConfig:
 
 
 def load_config() -> AppConfig:
+    language = os.environ.get("GH_ACTIONS_LANG", DEFAULT_LANGUAGE).strip().lower()
+    set_language(language if language in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE)
+
     github_pat = os.environ.get("GITHUB_PAT")
     if not github_pat:
-        raise ConfigError("Требуется переменная окружения GITHUB_PAT.")
+        raise ConfigError(t("config.missing_pat"))
 
     repository = os.environ.get("GITHUB_REPOSITORY")
     if not repository:
-        raise ConfigError("Требуется переменная окружения GITHUB_REPOSITORY.")
+        raise ConfigError(t("config.missing_repo"))
 
     owner, repo = _parse_repository(repository)
     github_api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
@@ -58,5 +63,5 @@ def load_config() -> AppConfig:
 def _parse_repository(value: str) -> tuple[str, str]:
     parts = value.split("/", maxsplit=1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ConfigError("GITHUB_REPOSITORY должен быть в формате owner/repo.")
+        raise ConfigError(t("config.bad_repo_format"))
     return parts[0], parts[1]

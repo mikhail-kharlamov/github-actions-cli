@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from gh_actions_cli.i18n import t
 from gh_actions_cli.models import (
     ArtifactSummary,
     JobSummary,
@@ -111,13 +112,13 @@ def render_artifacts(console: Console, artifacts: list[ArtifactSummary]) -> None
 
 def render_runner_load(console: Console, summary: RunnerLoadSummary) -> None:
     pressure_style = {
-        "Свободно": "green",
-        "Умеренно": "yellow",
-        "Перегружено": "red",
+        "free": "green",
+        "moderate": "yellow",
+        "overloaded": "red",
     }.get(summary.pressure, "cyan")
     lines = [
         "runner-load",
-        f"Оценка: {summary.pressure}",
+        t("runner_load.assessment", pressure=t(f"pressure.{summary.pressure}")),
         f"queued: {summary.queued}",
         f"in_progress: {summary.in_progress}",
         f"active_total: {summary.total_active}",
@@ -144,4 +145,4 @@ def render_message(console: Console, text: str, style: str = "cyan") -> None:
 
 
 def render_error(console: Console, text: str) -> None:
-    console.print(Panel(text, border_style="red", title="Ошибка"))
+    console.print(Panel(text, border_style="red", title=t("error.title")))

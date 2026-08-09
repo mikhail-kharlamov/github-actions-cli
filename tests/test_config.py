@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from gh_actions_cli import i18n
 from gh_actions_cli.config import ConfigError, load_config
 
 
@@ -40,3 +41,23 @@ def test_load_config_rejects_invalid_repository(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(ConfigError, match="owner/repo"):
         load_config()
+
+
+def test_load_config_applies_gh_actions_lang(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GH_ACTIONS_LANG", "en")
+
+    load_config()
+
+    assert i18n.get_language() == "en"
+
+
+def test_load_config_falls_back_to_default_language_for_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_PAT", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GH_ACTIONS_LANG", "de")
+
+    load_config()
+
+    assert i18n.get_language() == i18n.DEFAULT_LANGUAGE

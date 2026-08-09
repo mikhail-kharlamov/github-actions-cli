@@ -11,6 +11,7 @@ from types import ModuleType
 from rich.console import Console
 
 from gh_actions_cli.app import App
+from gh_actions_cli.i18n import t
 
 COMMAND_INTERRUPT_SIGNAL = getattr(signal, "SIGQUIT", None)
 ANSI_PROMPT = "\033[1;36mgh-actions> \033[0m"
@@ -91,7 +92,7 @@ def print_command_timestamp(console: Console, line: str) -> None:
 
 def run_repl(app: App, console: Console) -> int:
     readline = enable_line_editing()
-    console.print(r"Введите /help для списка команд. Ctrl+\ останавливает текущую команду, Ctrl+C выходит.")
+    console.print(t("repl.welcome"))
     with command_interrupts_enabled():
         while True:
             try:
@@ -111,4 +112,4 @@ def run_repl(app: App, console: Console) -> int:
                 if not app.handle_line(line):
                     return 0
             except CommandInterrupted:
-                console.print("\nКоманда остановлена.")
+                console.print(t("repl.command_stopped"))

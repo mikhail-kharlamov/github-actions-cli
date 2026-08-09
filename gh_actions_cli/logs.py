@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from zipfile import BadZipFile, ZipFile
 
+from gh_actions_cli.i18n import t
 from gh_actions_cli.models import JobSummary
 
 
@@ -64,7 +65,7 @@ def _read_archive(archive_bytes: bytes) -> dict[str, str]:
                     continue
                 results[path] = archive.read(path).decode("utf-8", errors="replace")
     except BadZipFile as error:
-        raise LogFormatError("Не удалось прочитать архив логов GitHub.") from error
+        raise LogFormatError(t("logs.archive_read_failed")) from error
     return results
 
 

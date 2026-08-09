@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import shlex
 
+from gh_actions_cli.i18n import t
 from gh_actions_cli.models import ParsedCommand
 
 
 KNOWN_COMMANDS = {
     "help",
+    "lang",
     "quit",
     "clear",
     "workflows",
@@ -38,15 +40,15 @@ class CommandError(RuntimeError):
 def parse_command(raw: str) -> ParsedCommand:
     text = raw.strip()
     if not text.startswith("/"):
-        raise CommandError("Команда должна начинаться с /.")
+        raise CommandError(t("command.must_start_with_slash"))
 
     parts = shlex.split(text[1:])
     if not parts:
-        raise CommandError("Пустая команда.")
+        raise CommandError(t("command.empty"))
 
     name = parts[0]
     if name not in KNOWN_COMMANDS:
-        raise CommandError(f"Неизвестная команда: {name}")
+        raise CommandError(t("command.unknown", name=name))
 
     args: list[str] = []
     options: dict[str, str] = {}

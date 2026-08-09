@@ -387,6 +387,58 @@ def test_quit_command_stops_repl() -> None:
     assert should_continue is False
 
 
+# --- /lang tests ---
+
+def test_lang_command_shows_current_language_with_no_args() -> None:
+    app, console, _client = _make_app()
+
+    should_continue = app.handle_line("/lang")
+
+    assert should_continue is True
+    assert "ru" in console.export_text()
+
+
+def test_lang_command_switches_interface_to_english() -> None:
+    app, console, _client = _make_app()
+
+    app.handle_line("/lang en")
+    output_after_switch = console.export_text()
+    should_continue = app.handle_line("/help")
+
+    assert should_continue is True
+    assert "Interface language: en." in output_after_switch
+    help_output = console.export_text()
+    assert "show the command list" in help_output
+    assert "показать список команд" not in help_output
+
+
+def test_lang_command_rejects_unknown_language() -> None:
+    app, console, _client = _make_app()
+
+    should_continue = app.handle_line("/lang fr")
+
+    assert should_continue is True
+    output = console.export_text()
+    assert "fr" in output
+
+
+def test_run_status_labels_switch_to_english() -> None:
+    app, console, client = _make_app()
+    app.handle_line("/lang en")
+    app.session.run_index[1] = WorkflowRunSummary(
+        id=301, workflow_id=101, name="Build", status="in_progress", conclusion=None, head_branch="main",
+    )
+    client.list_jobs = lambda run_id: [
+        JobSummary(id=201, run_id=run_id, name="run-python", status="queued", conclusion=None),
+    ]
+
+    app.handle_line("/run-status 1")
+
+    output = console.export_text()
+    assert "Jobs:" in output
+    assert "queued" in output
+
+
 def test_artifacts_command_updates_session_indexes() -> None:
     app, _console, _client = _make_app()
     app.session.run_index[1] = SimpleNamespace(id=301)

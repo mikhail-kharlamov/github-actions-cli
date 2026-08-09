@@ -49,6 +49,32 @@ or, after installing the script entry point:
 gh-actions-cli
 ```
 
+## MCP Server
+
+`gh-actions-cli` also ships an [MCP](https://modelcontextprotocol.io) server that exposes the same GitHub Actions functionality as tools an agent can call directly: listing workflows, dispatching runs, checking run/job status, reading job and step logs, listing/downloading artifacts, and checking runner load.
+
+Run it directly:
+
+```bash
+gh-actions-mcp
+```
+
+or, without the installed entry point:
+
+```bash
+python -m gh_actions_cli.mcp_server
+```
+
+It reads the same environment variables as the CLI (`GITHUB_PAT`, `GITHUB_REPOSITORY`, etc. — see [Environment](#environment)) and speaks MCP over stdio, so it can be registered with any MCP-compatible client. For example, in Claude Code:
+
+```bash
+claude mcp add gh-actions -- gh-actions-mcp
+```
+
+(set `GITHUB_PAT` and `GITHUB_REPOSITORY` in the environment `claude` runs in, or pass `--env KEY=VALUE` per the client's MCP config format).
+
+Available tools: `list_workflows`, `get_workflow_dispatch_inputs`, `dispatch_workflow`, `list_runs`, `get_run`, `cancel_run`, `list_jobs`, `get_job_log`, `get_step_log`, `list_artifacts`, `download_artifact`, `get_runner_load`.
+
 ## Keyboard Shortcuts
 
 - `Ctrl+\` - stop the currently running command on macOS/Linux and return to the prompt
